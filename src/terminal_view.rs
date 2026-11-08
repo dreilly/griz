@@ -17,6 +17,10 @@ pub fn color([r, g, b]: [u8; 3]) -> Color {
     }
 }
 
+pub fn background() -> Color {
+    color([24, 26, 29])
+}
+
 pub fn grid(width: f32, height: f32) -> (u16, u16) {
     griz_protocol::dimensions(
         ((width - 2.0 * PAD).max(0.0) / CELL_WIDTH) as u16,
@@ -34,7 +38,8 @@ pub fn viewport(state: &State) -> El {
         .w_full()
         .min_h(0.0)
         .min_w(0.0)
-        .fill(Color::BLACK)
+        .fill(background())
+        .no_focus_ring()
         .clip_soft(0.0)
         .instant_changes()
         .on_key(crate::terminal_key)
@@ -92,7 +97,8 @@ fn screen_grid(screen: &Screen) -> El {
         .absolute(PAD, PAD)
         .inert();
     for (y, row) in screen.cells.iter().enumerate() {
-        // Coalesce adjacent backgrounds. Blank black cells need no nodes at all.
+        // Coalesce adjacent backgrounds. The protocol's black base background
+        // stays transparent here, allowing the charcoal terminal surface through.
         let mut x = 0;
         while x < row.len() {
             let start = x;

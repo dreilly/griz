@@ -99,9 +99,197 @@ fn first_frame_has_workspaces_tabs_and_a_terminal_viewport() {
     ] {
         assert!(rt.find(key).is_some(), "missing {key}");
     }
+    assert!(rt.find("workspace-header").is_none());
     assert_eq!(size(&rt, "root"), [1100.0, 720.0]);
     let [width, height] = size(&rt, "terminal");
     assert!(width > 800.0 && height > 500.0);
+}
+
+#[test]
+fn terminal_card_is_inset_with_a_header_and_shared_charcoal_surface() {
+    let mut rt = runtime((1100.0, 720.0));
+    // Layout callbacks are delivered after the first frame.
+    rt.frame(0.0);
+    let elements = rt.elements();
+    let element = |key: &str| {
+        elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some(key))
+            .unwrap_or_else(|| panic!("missing {key}"))
+    };
+    let stage = element("terminal-stage");
+    let card = element("terminal-card");
+    let content = element("terminal-content");
+    let header = element("terminal-header");
+    let viewport = element("terminal");
+    assert_eq!(card.radius, 11.0);
+    assert_eq!(content.radius, 10.0);
+    // The rounded content is inset by the frame width on every side.
+    for (actual, expected) in content.rect.into_iter().zip([
+        card.rect[0] + 1.0,
+        card.rect[1] + 1.0,
+        card.rect[2] - 2.0,
+        card.rect[3] - 2.0,
+    ]) {
+        assert!((actual - expected).abs() < 0.1);
+    }
+    assert_eq!(card.fill, terminal_view::background());
+    assert_eq!(viewport.fill, card.fill);
+    assert_ne!(element("root").fill, card.fill);
+    for (actual, expected) in card.rect.into_iter().zip([
+        stage.rect[0] + 10.0,
+        stage.rect[1] + 10.0,
+        stage.rect[2] - 20.0,
+        stage.rect[3] - 20.0,
+    ]) {
+        assert!((actual - expected).abs() < 0.1);
+    }
+    assert_eq!(header.rect[3], 34.0);
+    assert!((viewport.rect[1] - header.rect[1] - header.rect[3]).abs() < 0.1);
+    assert!(element("terminal-status").rect[1] > card.rect[1] + card.rect[3]);
+    assert_eq!(
+        rt.state.grid,
+        terminal_view::grid(viewport.rect[2], viewport.rect[3])
+    );
+}
+
+#[test]
+fn single_terminal_tab_stays_content_sized() {
+    let (mut state, _) = mock();
+    state.snapshot.as_mut().unwrap().workspaces[0]
+        .terminals
+        .truncate(1);
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    let [tab_width, _] = size(&rt, "tab-container-1");
+    let [strip_width, _] = size(&rt, "terminal-tabs");
+    assert!(tab_width < 150.0, "single tab stretched to {tab_width}");
+    assert!(tab_width < strip_width / 2.0);
+    // Adding another tab shouldn't change the first tab's natural width.
+    rt.update(|s, _| s.apply(snapshot()));
+    rt.frame(0.0);
+    assert!((size(&rt, "tab-container-1")[0] - tab_width).abs() < 0.1);
+}
+
+#[test]
+fn numbered_tabs_have_independent_close_buttons() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    rt.frame(0.0);
+    let elements = rt.elements();
+    for id in [1, 2] {
+        let tab = elements
+            .iter()
+            .position(|e| e.key.as_deref() == Some(&format!("tab-{id}")))
+            .unwrap();
+        assert!(
+            elements
+                .iter()
+                .any(|e| { e.parent == Some(tab) && e.text.as_deref() == Some(&id.to_string()) })
+        );
+        assert!(rt.find(&format!("close-terminal-{id}")).is_some());
+    }
+    commands(&outgoing);
+    // Closing an inactive tab must not select it or affect the active shell.
+    click(&mut rt, "close-terminal-2");
+    assert_eq!(rt.state.active_terminal(), Some(1));
+    assert!(commands(&outgoing).is_empty());
+    assert!(matches!(rt.state.dialog, Some(Dialog::CloseTerminal(2, _))));
+    click(&mut rt, "dialog-cancel");
+    assert!(commands(&outgoing).is_empty());
+    click(&mut rt, "close-terminal-2");
+    click(&mut rt, "dialog-submit");
+    let sent = commands(&outgoing);
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(
+        sent[0].1,
+        Command::CloseTerminal { terminal_id: 2 }
+    ));
+}
+
+#[test]
+fn tab_numbers_are_positions_in_the_current_workspace_not_stored_labels_or_ids() {
+    let mut rt = runtime((1100.0, 720.0));
+    let assert_text = |rt: &Runtime<State>, key: &str, expected: &str| {
+        let elements = rt.elements();
+        let parent = elements
+            .iter()
+            .position(|e| e.key.as_deref() == Some(key))
+            .unwrap();
+        assert!(
+            elements
+                .iter()
+                .any(|e| { e.parent == Some(parent) && e.text.as_deref() == Some(expected) }),
+            "{key} should show {expected}"
+        );
+    };
+    let mut updated = snapshot();
+    updated.workspaces[0].terminals[0].label = "Terminal 47".into();
+    updated.workspaces[0].terminals[1].label = "Terminal 103".into();
+    rt.update(|s, _| s.apply(updated.clone()));
+    rt.frame(0.0);
+    assert_text(&rt, "tab-1", "1");
+    assert_text(&rt, "tab-2", "2");
+    // Another workspace starts at 1 regardless of global terminal IDs.
+    updated.active_workspace = 2;
+    updated.active_terminal = Some(3);
+    updated.terminal.as_mut().unwrap().id = 3;
+    rt.update(|s, _| s.apply(updated.clone()));
+    rt.frame(0.0);
+    assert_text(&rt, "tab-3", "1");
+    assert_text(&rt, "terminal-header", "1");
+    // Removing a tab leaves the remaining positions consecutive.
+    updated.active_workspace = 1;
+    updated.workspaces[0].terminals.remove(0);
+    updated.active_terminal = Some(2);
+    updated.terminal.as_mut().unwrap().id = 2;
+    rt.update(|s, _| s.apply(updated));
+    rt.frame(0.0);
+    assert_text(&rt, "tab-2", "1");
+    assert_text(&rt, "terminal-header", "1");
+}
+
+#[test]
+fn tabs_are_wider_and_close_glyph_is_muted_without_hover_background() {
+    let mut rt = runtime((1100.0, 720.0));
+    assert!(size(&rt, "tab-container-1")[0] >= 80.0);
+    let close_look = |rt: &Runtime<State>| {
+        let elements = rt.elements();
+        let close = elements
+            .iter()
+            .position(|e| e.key.as_deref() == Some("close-terminal-1"))
+            .unwrap();
+        let glyph = elements.iter().find(|e| e.parent == Some(close)).unwrap();
+        (elements[close].fill, glyph.text_color)
+    };
+    let before = close_look(&rt);
+    assert_eq!(before.0, rune::Color::TRANSPARENT);
+    assert_eq!(before.1, Some(rune::oklch(0.64, 0.01, 260.0)));
+    let (x, y) = rt.find("close-terminal-1").unwrap();
+    rt.pointer_move(x, y);
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(close_look(&rt), before);
+}
+
+#[test]
+fn terminal_header_tracks_the_selected_tab() {
+    let mut rt = runtime((1100.0, 720.0));
+    let mut updated = snapshot();
+    updated.active_terminal = Some(2);
+    updated.terminal.as_mut().unwrap().id = 2;
+    rt.update(|s, _| s.apply(updated));
+    rt.frame(0.0);
+    let elements = rt.elements();
+    let header = elements
+        .iter()
+        .position(|e| e.key.as_deref() == Some("terminal-header"))
+        .unwrap();
+    assert!(
+        elements
+            .iter()
+            .any(|e| { e.parent == Some(header) && e.text.as_deref() == Some("2") })
+    );
 }
 
 #[test]
@@ -249,6 +437,30 @@ fn workspace_dialog_keeps_typing_out_of_the_shell_and_creates_named_collection()
 }
 
 #[test]
+fn sidebar_rename_updates_the_selected_workspace() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1000.0, 680.0));
+    let elements = rt.elements();
+    let rename = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("rename-workspace"))
+        .unwrap();
+    assert_eq!(
+        elements[rename.parent.unwrap()].key.as_deref(),
+        Some("sidebar")
+    );
+    commands(&outgoing);
+    click(&mut rt, "rename-workspace");
+    rt.update(|s, _| s.draft = TextEdit::new("Renamed"));
+    rt.frame(0.0);
+    click(&mut rt, "dialog-submit");
+    assert!(commands(&outgoing).iter().any(|(_, c)| matches!(
+        c,
+        Command::RenameWorkspace { workspace_id: 1, name } if name == "Renamed"
+    )));
+}
+
+#[test]
 fn terminal_dialog_sends_its_own_directory_and_closing_requires_confirmation() {
     let (state, outgoing) = mock();
     let mut rt = make_runtime(state, (1000.0, 680.0));
@@ -260,7 +472,7 @@ fn terminal_dialog_sends_its_own_directory_and_closing_requires_confirmation() {
     click(&mut rt, "dialog-submit");
     assert!(commands(&outgoing).iter().any(|(_,c)| matches!(c, Command::CreateTerminal { workspace_id: 1, cwd: Some(cwd) } if cwd == "/tmp/something-else")));
     rt.state.pending = None;
-    click(&mut rt, "close-terminal");
+    click(&mut rt, "close-terminal-1");
     assert!(
         !commands(&outgoing)
             .iter()
@@ -272,7 +484,7 @@ fn terminal_dialog_sends_its_own_directory_and_closing_requires_confirmation() {
             .iter()
             .any(|(_, c)| matches!(c, Command::CloseTerminal { .. }))
     );
-    click(&mut rt, "close-terminal");
+    click(&mut rt, "close-terminal-1");
     click(&mut rt, "dialog-submit");
     assert!(
         commands(&outgoing)
@@ -309,7 +521,9 @@ fn exited_shell_exposes_explicit_start_action_without_accepting_input() {
 fn empty_workspace_and_small_window_remain_usable() {
     let mut rt = runtime((640.0, 420.0));
     let [width, height] = size(&rt, "terminal");
-    assert!(width >= 400.0 && height >= 250.0);
+    // The inset card and its header still leave room for a useful 40 × 9 grid.
+    let (cols, rows) = terminal_view::grid(width, height);
+    assert!(cols >= 40 && rows >= 9, "grid is {cols} × {rows}");
     let mut empty = snapshot();
     empty.workspaces[0].terminals.clear();
     empty.active_terminal = None;
@@ -317,7 +531,7 @@ fn empty_workspace_and_small_window_remain_usable() {
     rt.update(|s, _| s.apply(empty));
     rt.frame(0.0);
     assert!(rt.find("new-terminal").is_some());
-    assert!(rt.find("close-terminal").is_none());
+    assert!(rt.find("close-terminal-1").is_none());
     assert!(rt.state.status.starts_with("No terminals"));
 }
 

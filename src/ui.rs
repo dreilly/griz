@@ -14,9 +14,9 @@ struct Palette {
 
 fn palette() -> Palette {
     Palette {
-        bg: oklch(0.17, 0.005, 260.0),
-        panel: oklch(0.20, 0.005, 260.0),
-        line: oklch(0.29, 0.005, 260.0),
+        bg: terminal_view::color([17, 17, 20]),
+        panel: terminal_view::color([17, 17, 20]),
+        line: terminal_view::color([44, 46, 49]),
         ink: oklch(0.91, 0.005, 260.0),
         muted: oklch(0.64, 0.01, 260.0),
         accent: oklch(0.78, 0.10, 155.0),
@@ -145,6 +145,15 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
             )
             .child(workspaces)
             .child(
+                button("rename-workspace", "Rename workspace", &p)
+                    .disabled(!state.ready() || state.workspace().is_none())
+                    .on_press_tx(|s: &mut State, tx| {
+                        if let Some(w) = s.workspace() {
+                            s.open_dialog(Dialog::RenameWorkspace(w.id), tx);
+                        }
+                    }),
+            )
+            .child(
                 text("Switching or closing this window leaves your terminals running.")
                     .font(type_::LABEL)
                     .color(p.muted)
@@ -165,46 +174,138 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
             )
     });
 
-    let workspace_name = state
-        .workspace()
-        .map(|w| w.name.as_str())
-        .unwrap_or("Workspace");
-    let mut tabs = row()
-        .key("terminal-tabs")
-        .grow(1.0)
-        .min_w(0.0)
-        .h_full()
-        .gap(4.0)
-        .center_y()
-        .scroll_x();
+    let mut tabs = row().key("terminal-tab-items").h_full().gap(4.0).center_y();
     if let Some(workspace) = state.workspace() {
-        for terminal in &workspace.terminals {
+        for (index, terminal) in workspace.terminals.iter().enumerate() {
+            let number = index + 1;
             let id = terminal.id;
             let active = state.active_terminal() == Some(id);
             let label = format!(
                 "{}{}",
-                terminal.label,
+                number,
                 if terminal.exited.is_some() {
                     " · exited"
                 } else {
                     ""
                 }
             );
+            let close_label = format!("terminal {number}");
             tabs = tabs.child(
-                button(format!("tab-{id}"), &label, &p)
-                    .disabled(!state.ready())
+                row()
+                    .key(format!("tab-container-{id}"))
+                    .min_w(80.0)
+                    .h(28.0)
+                    .pr(4.0)
+                    .center_y()
+                    .radius(5.0)
                     .fill(if active {
                         p.ink.alpha(0.10)
                     } else {
                         Color::TRANSPARENT
                     })
-                    .on_press_tx(move |s: &mut State, tx| {
-                        s.change(Command::SelectTerminal { terminal_id: id });
-                        tx.blur();
-                    }),
+                    .child(
+                        button(format!("tab-{id}"), &label, &p)
+                            .label(format!("Select terminal {number}"))
+                            .grow(1.0)
+                            .disabled(!state.ready())
+                            .on_press_tx(move |s: &mut State, tx| {
+                                s.change(Command::SelectTerminal { terminal_id: id });
+                                tx.blur();
+                            }),
+                    )
+                    .child(
+                        row()
+                            .key(format!("close-terminal-{id}"))
+                            .role("button")
+                            .label(format!("Close terminal {number}"))
+                            .focusable(true)
+                            .w(20.0)
+                            .h(20.0)
+                            .center()
+                            .radius(3.0)
+                            .focus_ring(2.0, 2.0, p.accent)
+                            .child(text("×").font(type_::LABEL).color(p.muted))
+                            .disabled(!state.ready())
+                            .on_press_tx(move |s: &mut State, tx| {
+                                s.open_dialog(Dialog::CloseTerminal(id, close_label.clone()), tx);
+                            }),
+                    ),
             );
         }
     }
+    // A scroll viewport stretches its sole content child to its width. Keep
+    // that child a row, even with one tab, so the tab itself stays content-sized.
+    let tabs = row()
+        .key("terminal-tabs")
+        .grow(1.0)
+        .min_w(0.0)
+        .h_full()
+        .scroll_x()
+        .child(tabs);
+    let terminal_label = state
+        .workspace()
+        .and_then(|w| {
+            w.terminals
+                .iter()
+                .position(|t| Some(t.id) == state.active_terminal())
+        })
+        .map(|index| (index + 1).to_string())
+        .unwrap_or_else(|| "Terminal".into());
+    let terminal_card = col()
+        .key("terminal-card")
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .min_w(0.0)
+        .padding(1.0)
+        .radius(11.0)
+        .fill(terminal_view::background())
+        .border(1.0, p.line)
+        .focus_within_ring(1.0, -1.0, p.accent.alpha(0.65))
+        .child(
+            // Clip content to the inside of the frame, not the outer edge.
+            // Otherwise opaque viewport corners paint over the curved border.
+            col()
+                .key("terminal-content")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .min_w(0.0)
+                .radius(10.0)
+                .clip_rounded(10.0)
+                .child(
+                    row()
+                        .key("terminal-header")
+                        .h(34.0)
+                        .w_full()
+                        .px(12.0)
+                        .gap(10.0)
+                        .center_y()
+                        .border_sides([0.0, 0.0, 1.0, 0.0], p.line)
+                        .child(text(">_").font(type_::LABEL).color(p.muted))
+                        .child(
+                            text(terminal_label)
+                                .font(type_::LABEL)
+                                .color(p.ink)
+                                .truncate(),
+                        )
+                        .child(el().grow(1.0))
+                        .children(state.shell_exited().then(|| {
+                            button("start-shell", "Start new shell", &p)
+                                .disabled(!state.ready())
+                                .fill(p.accent.alpha(0.15))
+                                .on_press_tx(|s: &mut State, tx| {
+                                    if s.shell_exited()
+                                        && let Some(terminal_id) = s.active_terminal()
+                                    {
+                                        s.change(Command::StartShell { terminal_id });
+                                    }
+                                    tx.blur();
+                                })
+                        })),
+                )
+                .child(terminal_view::viewport(state)),
+        );
     let terminal = col()
         .key("terminal-pane")
         .grow(1.0)
@@ -212,62 +313,11 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .h_full()
         .child(
             row()
-                .key("workspace-header")
-                .h(38.0)
-                .w_full()
-                .px(12.0)
-                .center_y()
-                .gap(8.0)
-                .child(
-                    text(workspace_name)
-                        .font(type_::LABEL)
-                        .color(p.muted)
-                        .truncate(),
-                )
-                .child(
-                    button("rename-workspace", "Rename", &p)
-                        .disabled(!state.ready() || state.workspace().is_none())
-                        .on_press_tx(|s: &mut State, tx| {
-                            if let Some(w) = s.workspace() {
-                                s.open_dialog(Dialog::RenameWorkspace(w.id), tx);
-                            }
-                        }),
-                )
-                .child(el().grow(1.0))
-                .children(state.shell_exited().then(|| {
-                    button("start-shell", "Start new shell", &p)
-                        .disabled(!state.ready())
-                        .fill(p.accent.alpha(0.15))
-                        .on_press_tx(|s: &mut State, tx| {
-                            if s.shell_exited()
-                                && let Some(terminal_id) = s.active_terminal()
-                            {
-                                s.change(Command::StartShell { terminal_id });
-                            }
-                            tx.blur();
-                        })
-                }))
-                .children(state.active_terminal().map(|terminal_id| {
-                    let label = state
-                        .workspace()
-                        .and_then(|w| w.terminals.iter().find(|t| t.id == terminal_id))
-                        .map(|t| t.label.clone())
-                        .unwrap_or_default();
-                    button("close-terminal", "Close tab", &p)
-                        .disabled(!state.ready())
-                        .on_press_tx(move |s: &mut State, tx| {
-                            s.open_dialog(Dialog::CloseTerminal(terminal_id, label.clone()), tx)
-                        })
-                })),
-        )
-        .child(
-            row()
                 .h(38.0)
                 .w_full()
                 .px(12.0)
                 .gap(8.0)
                 .center_y()
-                .border_sides([0.0, 0.0, 1.0, 0.0], p.line)
                 .child(tabs)
                 .child(
                     button("new-terminal", "+ Terminal", &p)
@@ -279,7 +329,16 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                         }),
                 ),
         )
-        .child(terminal_view::viewport(state))
+        .child(
+            col()
+                .key("terminal-stage")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .min_w(0.0)
+                .padding(10.0)
+                .child(terminal_card),
+        )
         .child(
             row()
                 .key("terminal-status")
