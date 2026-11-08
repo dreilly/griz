@@ -87,10 +87,36 @@ fn command_plus_equal_and_minus_work_in_settings_and_focused_fields_and_persist(
 }
 
 #[test]
-fn command_w_captures_the_active_terminal_id_and_never_closes_a_tab_container() {
+fn command_w_closes_a_nonfinal_terminal_immediately_by_its_id() {
     let (mut state, outgoing) = mock();
     let mut selected = snapshot();
     selected.workspaces[0].terminals[1].id = 47;
+    selected.workspaces[0].tabs[1] = tab(47);
+    selected.active_terminal = Some(47);
+    selected.terminal.as_mut().unwrap().id = 47;
+    state.apply(selected);
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    click(&mut rt, "terminal");
+    commands(&outgoing);
+    rt.key(command('w', false));
+    rt.frame(0.0);
+    let sent = commands(&outgoing);
+    assert!(rt.state.dialog.is_none());
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(
+        sent[0].1,
+        Command::CloseTerminal { terminal_id: 47 }
+    ));
+    assert!(rt.state.pending.is_some());
+}
+
+#[test]
+fn final_terminal_confirmation_captures_the_terminal_id_and_never_retargets() {
+    let (mut state, outgoing) = mock();
+    let mut selected = snapshot();
+    selected.workspaces[0].terminals[1].id = 47;
+    selected.workspaces[0].terminals.remove(0);
+    selected.workspaces[0].tabs = vec![tab(47)];
     selected.active_terminal = Some(47);
     selected.terminal.as_mut().unwrap().id = 47;
     state.apply(selected);

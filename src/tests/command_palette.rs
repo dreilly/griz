@@ -279,6 +279,37 @@ fn command_mode_can_switch_from_navigation_and_create_a_workspace_here() {
 }
 
 #[test]
+fn close_terminal_command_only_confirms_when_its_workspace_would_close() {
+    for final_terminal in [false, true] {
+        let (mut state, outgoing) = mock();
+        if final_terminal {
+            let mut last = snapshot();
+            last.workspaces[0].terminals.truncate(1);
+            last.workspaces[0].tabs.truncate(1);
+            state.apply(last);
+        }
+        let mut rt = make_runtime(state, (1100.0, 720.0));
+        open(&mut rt, true);
+        commands(&outgoing);
+        press(&mut rt, Key::Text("close active terminal".into()));
+        settle(&mut rt);
+        click(&mut rt, "palette-action-terminal.close");
+        assert!(!rt.state.palette.is_open());
+        let sent = commands(&outgoing);
+        if final_terminal {
+            assert!(matches!(rt.state.dialog, Some(Dialog::CloseTerminal(1, _))));
+            assert!(sent.is_empty());
+        } else {
+            assert!(rt.state.dialog.is_none());
+            assert!(
+                sent.iter()
+                    .any(|(_, c)| matches!(c, Command::CloseTerminal { terminal_id: 1 }))
+            );
+        }
+    }
+}
+
+#[test]
 fn clicking_a_command_keeps_existing_destructive_confirmation() {
     let (state, outgoing) = mock();
     let mut rt = make_runtime(state, (1100.0, 720.0));

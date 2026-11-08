@@ -97,6 +97,10 @@ impl WorkspaceButtonStyle {
 pub enum Action {
     NewTerminal,
     CloseTerminal,
+    SplitHorizontal,
+    SplitVertical,
+    NextPane,
+    PreviousPane,
     NewWorkspace,
     ToggleSidebar,
     NextTab,
@@ -108,7 +112,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 14] = [
         Self::NewTerminal,
         Self::CloseTerminal,
         Self::NewWorkspace,
@@ -119,12 +123,20 @@ impl Action {
         Self::DecreaseFontSize,
         Self::QuickOpen,
         Self::CommandPalette,
+        Self::SplitHorizontal,
+        Self::SplitVertical,
+        Self::NextPane,
+        Self::PreviousPane,
     ];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::NewTerminal => "terminal.new",
             Self::CloseTerminal => "terminal.close",
+            Self::SplitHorizontal => "pane.split_horizontal",
+            Self::SplitVertical => "pane.split_vertical",
+            Self::NextPane => "pane.next",
+            Self::PreviousPane => "pane.previous",
             Self::NewWorkspace => "workspace.new",
             Self::ToggleSidebar => "sidebar.toggle",
             Self::NextTab => "tab.next",
@@ -139,7 +151,11 @@ impl Action {
     pub fn label(self) -> &'static str {
         match self {
             Self::NewTerminal => "New terminal",
-            Self::CloseTerminal => "Close active terminal…",
+            Self::CloseTerminal => "Close active terminal",
+            Self::SplitHorizontal => "Split horizontally (top / bottom)",
+            Self::SplitVertical => "Split vertically (left / right)",
+            Self::NextPane => "Focus next pane",
+            Self::PreviousPane => "Focus previous pane",
             Self::NewWorkspace => "New workspace…",
             Self::ToggleSidebar => "Toggle sidebar",
             Self::NextTab => "Next tab",
@@ -155,6 +171,10 @@ impl Action {
         Chord::parse(match self {
             Self::NewTerminal => "mod+t",
             Self::CloseTerminal => "mod+w",
+            Self::SplitHorizontal => "mod+shift+d",
+            Self::SplitVertical => "mod+d",
+            Self::NextPane => "mod+alt+right",
+            Self::PreviousPane => "mod+alt+left",
             Self::NewWorkspace => "mod+shift+n",
             Self::ToggleSidebar => "mod+b",
             Self::NextTab => "mod+shift+right",

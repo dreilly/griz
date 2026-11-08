@@ -49,7 +49,8 @@ GRIZ_SOCKET="$preview_dir/core.sock" ./target/debug/griz-core --stop
 
 ## Workspaces and terminals
 
-**Workspace → tabs → terminals.** For now, each tab contains exactly one terminal.
+**Workspace → tabs → terminal panes.** Each tab starts with one terminal and can
+contain nested horizontal and vertical splits.
 
 A workspace is a **collection of terminals**, not a project or directory. For example,
 “Daily” can contain a frontend shell, backend logs, a dotfiles editor, an SSH
@@ -75,7 +76,15 @@ connection, and a scratch shell, all in unrelated directories.
 - Click **+ Terminal** to open another independent shell. Its optional absolute
   starting directory applies only to that terminal. Blank uses the service's
   launch directory. You can also `cd` independently in any shell.
-- Click tabs to switch terminals. Right-click any workspace for **Rename workspace…**,
+- Click tabs to switch layouts; click a pane's header or terminal area to focus it.
+  Use **↔** in the tab bar or **⌘D** to split vertically (left/right), and **↕** or
+  **⇧⌘D** to split horizontally (top/bottom). Splits divide the focused pane equally
+  and can be nested, up to eight panes per tab. Each pane has its own rounded frame,
+  separated by a 10-point gap. The new shell inherits the focused shell's current
+  directory. All visible panes update independently, including unfocused ones.
+  **⌥⌘→ / ⌥⌘←** cycle pane focus within the current tab. Split ratios are fixed at
+  50/50 for now; draggable dividers are not implemented.
+- Right-click any workspace for **Rename workspace…**,
   **Close workspace…**, and an **Accent color** swatch row: blue, purple, pink, orange,
   green, or graphite, using Rune’s accent palette. Green is the default. The workspace’s
   selected sidebar entry, active terminal tab, and pane outline/focus highlight share
@@ -91,24 +100,28 @@ connection, and a scratch shell, all in unrelated directories.
   get started** button, centered in the empty area. It uses normal UI font scaling
   and immediately creates a workspace with its directory-based default name, even
   with the sidebar hidden.
-- **Close tab** asks for confirmation, then ends that terminal's shell and
-  foreground job. Other terminals are untouched. Closing the last tab also closes
-  its workspace for every connected window, using the same neighboring-workspace
-  fallback as **Close workspace**. If no workspaces remain, use **+** to create one.
+- The tab's **×** closes its focused terminal (or its first pane in an inactive tab).
+  Split panes also have their own **×** in the header. Closing immediately ends only
+  that terminal's shell and foreground job, without a confirmation dialog. The remaining
+  panes expand into the freed space. Closing a tab's final pane removes the tab.
+  **Only closing the final terminal in a workspace asks for confirmation**, using a
+  simple **Close workspace?** prompt with the workspace name. It uses the same
+  neighboring-workspace fallback as **Close workspace**. If no workspaces remain,
+  use **+** to create one.
 - A shell that exits stays visibly exited. **Start new shell** explicitly replaces
   only that ended shell, retaining the tab and its original starting directory.
   The service refuses to replace a live shell.
 
 **Switching tabs/workspaces or closing the GUI never stops terminals.** Closing a
 tab, closing a workspace, and explicitly stopping the service are deliberately
-separate operations. Tab renaming/reordering and split panes are not implemented yet.
+separate operations. Tab renaming/reordering are not implemented yet.
 
 ## Two processes, independent lifetimes
 
 - **`griz-core`** owns the workspace catalog and each terminal's PTY, interactive
   shell, and libghostty-vt emulator. It consumes output even when a terminal is
   unselected or no GUI is attached.
-- **`griz`** is the disposable Rune client. It draws the selected terminal and sends
+- **`griz`** is the disposable Rune client. It draws the active tab's panes and sends
   addressed commands. It owns no PTY and does not link libghostty in production.
 - **`griz-protocol`** defines length-prefixed JSON over a private local
   Unix socket. It has no Rune or terminal-library dependencies.
@@ -126,7 +139,7 @@ switch another. Every terminal operation includes a terminal ID; it never means
 the GUI suppresses typing until it receives the acknowledged new selection, so
 queued old pictures cannot redirect keystrokes into the wrong tab.
 
-The service sends a consistent catalog plus the selected terminal's complete
+The service sends a consistent catalog plus every visible pane's complete
 styled screen. PTY-output publications are coalesced to roughly 60 per second;
 command acknowledgements and catalog changes can publish immediately. Only visible
 terminals need screen extraction; every background terminal still parses all its
@@ -134,8 +147,8 @@ output. A slow client retains only its newest pending view, with a separate boun
 error queue. The service blocks when idle; the GUI does not continuously poll frames.
 
 This is intentionally simpler than Rex's per-client raw-byte streaming design:
-terminal emulation remains authoritative in the service. Splits and more efficient
-frame encoding can be added behind the same ownership boundary.
+terminal emulation and split layouts remain authoritative in the service. More
+efficient frame encoding can be added behind the same ownership boundary.
 
 ## Settings and keyboard shortcuts
 
@@ -166,10 +179,11 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   commands; other shortcuts only run with terminal focus. Closing is suppressed
   while a modal is open.
 - Defaults: **⌘T** opens a terminal using the service default directory,
-  **⌘W** confirms closing the **active terminal**, **⇧⌘N** opens New Workspace,
+  **⌘W** closes the **active terminal** (confirming only for a workspace's final
+  terminal), **⇧⌘N** opens New Workspace,
   **⌘B** toggles the sidebar, and **⇧⌘→ / ⇧⌘←** cycle through tabs.
-  Closing targets a captured terminal ID, not a tab or window. When split panes are
-  added, this action will target the focused terminal within the tab.
+  **⌘D / ⇧⌘D** split vertically/horizontally, and **⌥⌘→ / ⌥⌘←** cycle pane focus.
+  Closing targets the focused pane's captured terminal ID, not a tab or window.
   The Settings shortcut **⌘,** stays fixed so Settings is always reachable.
 
 ### Quick navigation and command palette
@@ -183,10 +197,11 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   that exact terminal, including when it belongs to another workspace.
 - **⇧⌘P** opens **Commands**: create a workspace here (using the selected shell’s
   current directory), open terminals, choose a terminal starting directory, rename
-  or close the current workspace, close the active terminal, cycle tabs, toggle the
+  or close the current workspace, split panes, cycle pane focus, close the active terminal, cycle tabs, toggle the
   sidebar, adjust font size, and open Settings. Reconnect is available while
   disconnected; Start new shell appears for an exited shell. Destructive commands
-  still use their existing confirmation dialogs.
+  follow the same close rules: workspace closes and final-terminal closes ask for
+  confirmation; other terminal closes are immediate.
 - In both modes, type to filter, use **Ctrl-N / Ctrl-P** or **↓ / ↑** to cycle
   through results (wrapping at either end), and **Enter** to select. **Escape** or
   a click outside dismisses without running anything. Typing, paste, and search
@@ -196,8 +211,8 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   Control instead of Command. Within an open palette, Ctrl-P navigates results.
 - Session actions are disabled while disconnected or waiting for a selection
   acknowledgement, but Settings and local appearance commands remain available.
-  Split panes are not implemented yet, so navigation currently targets workspaces
-  and terminal tabs, not separate panes.
+  Jump To includes individual terminals inside split layouts; selecting one opens
+  its containing tab and focuses that exact pane.
 
 Preferences save automatically through Rune's atomic JSON store. On macOS the file
 is `~/Library/Application Support/griz/prefs.json`; on Linux it is
@@ -252,19 +267,21 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 - Optionally named, renameable workspaces and independently running terminal tabs.
 - Real local shells with input, cursor, ANSI/truecolor backgrounds and text,
   bold/italic/underline, Unicode cells, and alternate-screen state.
-- Window/sidebar resize updates libghostty and the selected PTY (SIGWINCH).
+- Window/sidebar resize updates libghostty and every visible pane's PTY (SIGWINCH).
 - Enter, Backspace, Tab, arrows (including application cursor mode), common navigation
   and function keys, Ctrl-C/Ctrl-D, clipboard paste, and basic IME preedit/commit.
-- Detach/reattach, background output, explicit close confirmation, ended-shell recovery.
+- Detach/reattach, background output, workspace/final-terminal close confirmation,
+  ended-shell recovery.
 
 ## Current limits
 
-- No tab reordering/renaming, splits, or remote transport yet.
+- No tab reordering/renaming, draggable split dividers, or remote transport yet.
 - No scrollback UI, selection/copy, mouse reporting, images, hyperlinks,
   advanced terminal keyboard protocols, or full font/glyph shaping.
 - Fixed-cell monospace rendering, not Ghostty's full renderer; basic shell/TUI use is the target.
 - Full snapshots, not dirty-cell deltas. Limits: 16 workspaces, 64 terminals total,
-  16 clients, 300 × 120 cells per grid, 256 KiB per input/paste, and 16 MiB per IPC message.
+  16 clients, eight panes per tab, 300 × 120 cells per grid, 256 KiB per input/paste,
+  and 16 MiB per IPC message.
 - Starting directories must be absolute existing paths; no file picker or `~` expansion.
 - Multiple clients may view one terminal but share its dimensions; the last
   selection/resize wins. Different terminals have independent dimensions.
@@ -286,6 +303,9 @@ resize, stale IDs, continuous output, explicit close/foreground termination,
 ended-shell replacement, request validation, and single-instance ownership.
 GUI tests cover navigation, dialogs, paste, toolbar focus, input routing while
 selection acknowledgements are pending, empty workspaces, and ended-shell recovery.
+Split tests cover nested layouts, both directions, rounded pane spacing, per-pane
+resizing, focus/input acknowledgement safety, cwd inheritance, sibling output,
+multi-client selection, layout collapse, stable tab IDs, and pane limits.
 Other tests exercise libghostty's colors/cursor/Unicode/alternate screen/query
 responses and Rune's cell placement.
 

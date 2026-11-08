@@ -181,6 +181,7 @@ fn entries(state: &State) -> Vec<Entry> {
                         true
                     }
                     Action::NewWorkspace => state.ready(),
+                    Action::SplitHorizontal | Action::SplitVertical => state.can_split(),
                     _ => state.ready() && state.active_terminal().is_some(),
                 };
                 let (title, detail) = if action == Action::NewWorkspace {

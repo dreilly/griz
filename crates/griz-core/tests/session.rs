@@ -1,5 +1,8 @@
 //! Exercise the real service, PTYs, shells, terminal parser, and local IPC.
-use griz_protocol::{Command as CoreCommand, Event, Request, Screen, ViewState, receive, send};
+use griz_protocol::{
+    Command as CoreCommand, Event, PaneLayout, Request, Screen, SplitDirection, ViewState, receive,
+    send,
+};
 use std::fs;
 use std::io;
 use std::os::unix::fs::DirBuilderExt;
@@ -13,6 +16,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod accents;
 #[path = "session/naming.rs"]
 mod naming;
+#[path = "session/splits.rs"]
+mod splits;
 #[path = "session/workspaces.rs"]
 mod workspaces;
 

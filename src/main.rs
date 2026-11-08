@@ -2,15 +2,20 @@
 mod client;
 mod command_palette;
 mod input;
+mod panes;
 mod settings;
 mod settings_ui;
 mod terminal_view;
 mod ui;
 mod workspace_ui;
 
-use griz_protocol::{Command, Event, Screen, TerminalId, ViewState, WorkspaceId, WorkspaceInfo};
+use griz_protocol::{
+    Command, Event, Screen, SplitDirection, TabInfo, TerminalId, ViewState, WorkspaceId,
+    WorkspaceInfo,
+};
 use rune::{App, AppSpec, Ime, KeyEvent, TextEdit, Titlebar, Tx, Waker};
 use settings::{Action, Settings};
+use std::collections::HashMap;
 use ui::view;
 
 const TITLEBAR_HEIGHT: f32 = 44.0;
@@ -49,7 +54,8 @@ struct State {
     settings_error: Option<String>,
     shortcut_search: TextEdit,
     palette: command_palette::PaletteState,
-    viewport_size: Option<(f32, f32)>,
+    pane_sizes: HashMap<TerminalId, (f32, f32)>,
+    pane_grids: HashMap<TerminalId, (u16, u16)>,
 }
 
 impl Default for State {
@@ -77,7 +83,8 @@ impl Default for State {
             settings_error: None,
             shortcut_search: TextEdit::new(""),
             palette: command_palette::PaletteState::default(),
-            viewport_size: None,
+            pane_sizes: HashMap::new(),
+            pane_grids: HashMap::new(),
         }
     }
 }
@@ -100,12 +107,9 @@ impl State {
 
     fn settings_changed(&mut self) {
         self.settings_error = self.settings.save(&mut self.prefs).err();
-        if let Some((width, height)) = self.viewport_size {
-            let grid = terminal_view::grid_for(width, height, &self.settings);
-            if grid != self.grid {
-                self.grid = grid;
-                self.resize();
-            }
+        let sizes = self.pane_sizes.clone();
+        for (id, (width, height)) in sizes {
+            self.layout_pane(id, width, height);
         }
     }
 
@@ -151,33 +155,62 @@ impl State {
             }
             Action::CloseTerminal => {
                 if let Some(id) = self.active_terminal() {
-                    let number = self
-                        .workspace()
-                        .and_then(|w| w.terminals.iter().position(|t| t.id == id))
-                        .map(|i| i + 1)
-                        .unwrap_or(1);
-                    // Capture the active terminal's ID, never a tab/container ID. When splits
-                    // arrive, active_terminal() will follow the focused pane instead.
-                    self.open_dialog(Dialog::CloseTerminal(id, format!("terminal {number}")), tx);
+                    self.request_close_terminal(id, tx);
+                }
+            }
+            Action::SplitHorizontal | Action::SplitVertical => {
+                if self.can_split()
+                    && let Some(terminal_id) = self.active_terminal()
+                {
+                    self.change(Command::SplitTerminal {
+                        terminal_id,
+                        direction: if action == Action::SplitHorizontal {
+                            SplitDirection::Horizontal
+                        } else {
+                            SplitDirection::Vertical
+                        },
+                    });
+                }
+            }
+            Action::NextPane | Action::PreviousPane => {
+                if let Some(tab) = self.active_tab() {
+                    let ids = tab.layout.terminal_ids();
+                    let current = ids
+                        .iter()
+                        .position(|id| Some(*id) == self.active_terminal())
+                        .unwrap_or(0);
+                    let next = if action == Action::NextPane {
+                        (current + 1) % ids.len()
+                    } else {
+                        (current + ids.len() - 1) % ids.len()
+                    };
+                    self.change(Command::SelectTerminal {
+                        terminal_id: ids[next],
+                    });
                 }
             }
             Action::NextTab | Action::PreviousTab => {
                 if let Some(workspace) = self.workspace() {
-                    let len = workspace.terminals.len();
+                    let len = workspace.tabs.len();
                     if len > 0 {
                         let current = workspace
-                            .terminals
+                            .tabs
                             .iter()
-                            .position(|t| Some(t.id) == self.active_terminal())
+                            .position(|t| {
+                                self.active_terminal()
+                                    .is_some_and(|id| t.layout.contains(id))
+                            })
                             .unwrap_or(0);
                         let next = if action == Action::NextTab {
                             (current + 1) % len
                         } else {
                             (current + len - 1) % len
                         };
-                        self.change(Command::SelectTerminal {
-                            terminal_id: workspace.terminals[next].id,
-                        });
+                        if let Some(terminal_id) =
+                            workspace.tabs[next].layout.terminal_ids().first().copied()
+                        {
+                            self.change(Command::SelectTerminal { terminal_id });
+                        }
                     }
                 }
             }
@@ -189,6 +222,50 @@ impl State {
 
     fn screen(&self) -> Option<&Screen> {
         self.snapshot.as_ref()?.terminal.as_ref().map(|t| &t.screen)
+    }
+
+    fn active_tab(&self) -> Option<&TabInfo> {
+        let id = self.active_terminal()?;
+        self.workspace()?
+            .tabs
+            .iter()
+            .find(|t| t.layout.contains(id))
+    }
+
+    fn can_split(&self) -> bool {
+        self.ready()
+            && self
+                .active_tab()
+                .is_some_and(|t| t.layout.terminal_ids().len() < griz_protocol::MAX_PANES_PER_TAB)
+    }
+
+    fn pane_frame(&self, id: TerminalId) -> Option<&griz_protocol::TerminalFrame> {
+        let snapshot = self.snapshot.as_ref()?;
+        snapshot
+            .terminals
+            .iter()
+            .find(|t| t.id == id)
+            .or_else(|| snapshot.terminal.as_ref().filter(|t| t.id == id))
+    }
+
+    fn layout_pane(&mut self, id: TerminalId, width: f32, height: f32) {
+        // Layout callbacks are queued; a pane may have closed or its tab changed
+        // before this callback runs. Do not resurrect it or resize a hidden shell.
+        if !self.active_tab().is_some_and(|t| t.layout.contains(id)) {
+            return;
+        }
+        self.pane_sizes.insert(id, (width, height));
+        let grid = terminal_view::grid_for(width, height, &self.settings);
+        if Some(id) == self.active_terminal() {
+            self.grid = grid;
+        }
+        if self.pane_grids.insert(id, grid) != Some(grid) && self.ready() {
+            self.send(Command::Resize {
+                terminal_id: id,
+                cols: grid.0,
+                rows: grid.1,
+            });
+        }
     }
 
     fn active_terminal(&self) -> Option<TerminalId> {
@@ -309,6 +386,7 @@ impl State {
         self.pending = None;
         self.online = !self.offline;
         let old_terminal = self.active_terminal();
+        let old_tab = self.active_tab().cloned();
         self.status = match &snapshot.terminal {
             Some(t) => match &t.exited {
                 Some(status) => format!("Shell exited: {status} · use Start new shell"),
@@ -351,13 +429,60 @@ impl State {
                 self.pending = Some(serial);
             }
         }
-        // Reconcile on selection/attachment, not every picture: differently-sized
-        // clients viewing one terminal must not fight over its size indefinitely.
-        if selection_changed
-            && self.ready()
-            && self.screen().is_some_and(|s| (s.cols, s.rows) != self.grid)
-        {
-            self.resize();
+        // Reconcile once on attachment/selection/layout changes, not on every frame:
+        // differently-sized windows must not fight over PTY sizes indefinitely.
+        let layout_changed = old_tab.as_ref() != self.active_tab();
+        if let Some(snapshot) = &self.snapshot {
+            let visible: Vec<_> = snapshot.terminals.iter().map(|t| t.id).collect();
+            self.pane_sizes.retain(|id, _| visible.contains(id));
+            self.pane_grids.retain(|id, _| visible.contains(id));
+        }
+        if (selection_changed || layout_changed) && self.ready() {
+            for (id, (width, height)) in self.pane_sizes.clone() {
+                let grid = terminal_view::grid_for(width, height, &self.settings);
+                self.pane_grids.insert(id, grid);
+                if self
+                    .pane_frame(id)
+                    .is_some_and(|t| (t.screen.cols, t.screen.rows) != grid)
+                {
+                    self.send(Command::Resize {
+                        terminal_id: id,
+                        cols: grid.0,
+                        rows: grid.1,
+                    });
+                }
+            }
+            if self
+                .active_tab()
+                .is_some_and(|t| t.layout.terminal_ids().len() == 1)
+                && self
+                    .active_terminal()
+                    .is_some_and(|id| !self.pane_sizes.contains_key(&id))
+                && self.screen().is_some_and(|s| (s.cols, s.rows) != self.grid)
+            {
+                self.resize();
+            }
+        }
+    }
+
+    fn request_close_terminal(&mut self, id: TerminalId, tx: &mut Tx) {
+        if !self.ready() || self.settings_open || self.dialog.is_some() || self.palette.is_open() {
+            return;
+        }
+        let Some(workspace) = self.snapshot.as_ref().and_then(|s| {
+            s.workspaces
+                .iter()
+                .find(|w| w.terminals.iter().any(|t| t.id == id))
+        }) else {
+            return;
+        };
+        if workspace.terminals.len() == 1 {
+            // Capture this terminal, not the current selection: confirming later must
+            // never close a different shell after a catalog or selection update.
+            self.open_dialog(Dialog::CloseTerminal(id, workspace.name.clone()), tx);
+        } else {
+            self.change(Command::CloseTerminal { terminal_id: id });
+            tx.blur();
         }
     }
 
@@ -447,6 +572,15 @@ fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
     changed
 }
 
+fn terminal_focus(state: &State, tx: &Tx) -> bool {
+    tx.focused().is_none_or(|key| {
+        key == "terminal"
+            || state
+                .active_terminal()
+                .is_some_and(|id| key == format!("terminal-viewport-{id}"))
+    })
+}
+
 fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if state.recording.is_some() {
         return settings_ui::record_key(state, event, tx);
@@ -488,7 +622,7 @@ fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if state.settings_open || state.dialog.is_some() || state.palette.is_open() {
         return false;
     }
-    if tx.focused().is_none_or(|key| key == "terminal") {
+    if terminal_focus(state, tx) {
         for action in Action::ALL {
             if state.settings.matches(action, event, tx) {
                 if !tx.key_repeat() {
@@ -529,7 +663,7 @@ fn on_ime(state: &mut State, event: &Ime, tx: &mut Tx) -> bool {
     if state.settings_open
         || state.dialog.is_some()
         || state.palette.is_open()
-        || tx.focused().is_some_and(|key| key != "terminal")
+        || !terminal_focus(state, tx)
     {
         return false;
     }

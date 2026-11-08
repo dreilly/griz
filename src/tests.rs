@@ -6,6 +6,8 @@ mod command_palette_tests;
 mod font_and_close;
 #[path = "tests/settings.rs"]
 mod settings_tests;
+#[path = "tests/splits.rs"]
+mod splits;
 #[path = "tests/workspace_accents.rs"]
 mod workspace_accents;
 #[path = "tests/workspace_labels.rs"]
@@ -15,6 +17,13 @@ use super::*;
 use griz_protocol::{Request, TerminalFrame, TerminalInfo, WorkspaceInfo};
 use rune::{Env, Runtime};
 use std::sync::mpsc::Receiver;
+
+fn tab(id: TerminalId) -> TabInfo {
+    TabInfo {
+        id,
+        layout: griz_protocol::PaneLayout::Leaf { terminal_id: id },
+    }
+}
 
 fn snapshot() -> ViewState {
     let screen = griz_vt::Terminal::new(80, 24).unwrap().screen().unwrap();
@@ -38,6 +47,7 @@ fn snapshot() -> ViewState {
                 directory: "/tmp".into(),
                 accent: griz_protocol::WorkspaceAccent::default(),
                 terminals: vec![info(1), info(2)],
+                tabs: vec![tab(1), tab(2)],
             },
             WorkspaceInfo {
                 id: 2,
@@ -46,10 +56,12 @@ fn snapshot() -> ViewState {
                 directory: "/tmp".into(),
                 accent: griz_protocol::WorkspaceAccent::default(),
                 terminals: vec![info(3)],
+                tabs: vec![tab(3)],
             },
         ],
         active_workspace: 1,
         active_terminal: Some(1),
+        terminals: vec![],
         terminal: Some(TerminalFrame {
             id: 1,
             shell_pid: 101,
@@ -215,12 +227,7 @@ fn numbered_tabs_have_independent_close_buttons() {
     // Closing an inactive tab must not select it or affect the active shell.
     click(&mut rt, "close-terminal-2");
     assert_eq!(rt.state.active_terminal(), Some(1));
-    assert!(commands(&outgoing).is_empty());
-    assert!(matches!(rt.state.dialog, Some(Dialog::CloseTerminal(2, _))));
-    click(&mut rt, "dialog-cancel");
-    assert!(commands(&outgoing).is_empty());
-    click(&mut rt, "close-terminal-2");
-    click(&mut rt, "dialog-submit");
+    assert!(rt.state.dialog.is_none());
     let sent = commands(&outgoing);
     assert_eq!(sent.len(), 1);
     assert!(matches!(
@@ -263,6 +270,7 @@ fn tab_numbers_are_positions_in_the_current_workspace_not_stored_labels_or_ids()
     // Removing a tab leaves the remaining positions consecutive.
     updated.active_workspace = 1;
     updated.workspaces[0].terminals.remove(0);
+    updated.workspaces[0].tabs.remove(0);
     updated.active_terminal = Some(2);
     updated.terminal.as_mut().unwrap().id = 2;
     rt.update(|s, _| s.apply(updated));
@@ -831,7 +839,7 @@ fn empty_workspace_button_does_not_create_when_offline_or_disconnected() {
 }
 
 #[test]
-fn terminal_dialog_sends_its_own_directory_and_closing_requires_confirmation() {
+fn terminal_dialog_sends_its_own_directory_and_final_terminal_close_requires_confirmation() {
     let (state, outgoing) = mock();
     let mut rt = make_runtime(state, (1000.0, 680.0));
     commands(&outgoing);
@@ -841,8 +849,26 @@ fn terminal_dialog_sends_its_own_directory_and_closing_requires_confirmation() {
     rt.frame(0.0);
     click(&mut rt, "dialog-submit");
     assert!(commands(&outgoing).iter().any(|(_,c)| matches!(c, Command::CreateTerminal { workspace_id: 1, cwd: Some(cwd) } if cwd == "/tmp/something-else")));
-    rt.state.pending = None;
+    let mut final_terminal = snapshot();
+    final_terminal.ack = rt.state.pending.unwrap();
+    final_terminal.workspaces[0].terminals.truncate(1);
+    final_terminal.workspaces[0].tabs.truncate(1);
+    rt.update(|s, _| s.apply(final_terminal));
+    rt.frame(0.0);
+    commands(&outgoing);
     click(&mut rt, "close-terminal-1");
+    assert!(matches!(rt.state.dialog, Some(Dialog::CloseTerminal(1, _))));
+    let elements = rt.elements();
+    let dialog = elements
+        .iter()
+        .position(|e| e.key.as_deref() == Some("dialog"))
+        .unwrap();
+    let dialog_text: Vec<_> = elements
+        .iter()
+        .filter(|e| e.parent == Some(dialog))
+        .filter_map(|e| e.text.as_deref())
+        .collect();
+    assert_eq!(dialog_text, vec!["Close workspace?", "Daily"]);
     assert!(
         !commands(&outgoing)
             .iter()
@@ -896,6 +922,7 @@ fn empty_workspace_and_small_window_remain_usable() {
     assert!(cols >= 40 && rows >= 9, "grid is {cols} × {rows}");
     let mut empty = snapshot();
     empty.workspaces[0].terminals.clear();
+    empty.workspaces[0].tabs.clear();
     empty.active_terminal = None;
     empty.terminal = None;
     rt.update(|s, _| s.apply(empty));

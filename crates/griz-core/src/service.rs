@@ -3,8 +3,9 @@ use crate::session::Session;
 use crate::validation::{directory_label, directory_path, validate_cwd, workspace_name};
 use crate::{ClientId, Message};
 use griz_protocol::{
-    Command, Event, MAX_INPUT, MAX_TERMINALS, MAX_WORKSPACES, Screen, TerminalFrame, TerminalId,
-    TerminalInfo, ViewState, WorkspaceAccent, WorkspaceId, WorkspaceInfo, dimensions,
+    Command, Event, MAX_INPUT, MAX_PANES_PER_TAB, MAX_TERMINALS, MAX_WORKSPACES, PaneLayout,
+    Screen, SplitDirection, TabInfo, TerminalFrame, TerminalId, TerminalInfo, ViewState,
+    WorkspaceAccent, WorkspaceId, WorkspaceInfo, dimensions,
 };
 use griz_vt::Terminal;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -72,6 +73,7 @@ struct Workspace {
     custom_name: Option<String>,
     accent: WorkspaceAccent,
     terminals: Vec<TerminalRecord>,
+    tabs: Vec<TabInfo>,
     next_terminal_number: usize,
 }
 
@@ -121,6 +123,10 @@ impl Service {
                 custom_name: None,
                 accent: WorkspaceAccent::default(),
                 terminals: vec![terminal],
+                tabs: vec![TabInfo {
+                    id: 1,
+                    layout: PaneLayout::Leaf { terminal_id: 1 },
+                }],
                 next_terminal_number: 2,
             }],
             clients: BTreeMap::new(),
@@ -221,7 +227,10 @@ impl Service {
             .map(|workspace| {
                 (
                     workspace.id,
-                    workspace.terminals.first().map(|term| term.id),
+                    workspace
+                        .tabs
+                        .first()
+                        .and_then(|tab| tab.layout.terminal_ids().first().copied()),
                 )
             })
             .collect();
@@ -242,6 +251,7 @@ impl Service {
         );
         if let (Some(size), Some(terminal_id)) =
             (client_dimensions, self.active_terminal(client_id))
+            && !self.terminal_tab_is_split(terminal_id)
         {
             self.resize_terminal(terminal_id, size);
         }
@@ -336,11 +346,16 @@ impl Service {
                     .iter()
                     .find(|workspace| workspace.id == workspace_id)
                     .ok_or_else(|| format!("unknown workspace {workspace_id}"))?;
-                let fallback = workspace.terminals.first().map(|terminal| terminal.id);
+                let fallback = workspace
+                    .tabs
+                    .first()
+                    .and_then(|tab| tab.layout.terminal_ids().first().copied());
                 let client = self.clients.get_mut(&client_id).unwrap();
                 let selected = *client.selected.entry(workspace_id).or_insert(fallback);
                 let size = client.dimensions;
-                if let (Some(terminal_id), Some(size)) = (selected, size) {
+                if let (Some(terminal_id), Some(size)) = (selected, size)
+                    && !self.terminal_tab_is_split(terminal_id)
+                {
                     self.resize_terminal(terminal_id, size);
                 }
                 self.clients.get_mut(&client_id).unwrap().active_workspace = workspace_id;
@@ -359,7 +374,9 @@ impl Service {
                         "terminal {terminal_id} is not in the active workspace"
                     ));
                 }
-                if let Some(size) = self.clients[&client_id].dimensions {
+                if let Some(size) = self.clients[&client_id].dimensions
+                    && !self.terminal_tab_is_split(terminal_id)
+                {
                     self.resize_terminal(terminal_id, size);
                 }
                 self.clients
@@ -369,6 +386,10 @@ impl Service {
                     .insert(workspace_id, Some(terminal_id));
                 Ok(Outcome::Requester)
             }
+            Command::SplitTerminal {
+                terminal_id,
+                direction,
+            } => self.split_terminal(client_id, terminal_id, direction),
             Command::CloseTerminal { terminal_id } => self.close_terminal(terminal_id),
             Command::Input { terminal_id, data } => {
                 if data.len() > MAX_INPUT {
@@ -439,6 +460,10 @@ impl Service {
             custom_name,
             accent: WorkspaceAccent::default(),
             terminals: vec![terminal],
+            tabs: vec![TabInfo {
+                id: terminal_id,
+                layout: PaneLayout::Leaf { terminal_id },
+            }],
             next_terminal_number: 2,
         });
         for client in self.clients.values_mut() {
@@ -481,6 +506,10 @@ impl Service {
         .map_err(|error| format!("cannot create terminal: {error}"))?;
         let workspace = &mut self.workspaces[workspace_index];
         workspace.terminals.push(terminal);
+        workspace.tabs.push(TabInfo {
+            id: terminal_id,
+            layout: PaneLayout::Leaf { terminal_id },
+        });
         workspace.next_terminal_number += 1;
         for client in self.clients.values_mut() {
             if client.selected.get(&workspace_id) == Some(&None) {
@@ -490,6 +519,94 @@ impl Service {
         let client = self.clients.get_mut(&client_id).unwrap();
         client.active_workspace = workspace_id;
         client.selected.insert(workspace_id, Some(terminal_id));
+        Ok(Outcome::Catalog)
+    }
+
+    fn split_terminal(
+        &mut self,
+        client_id: ClientId,
+        terminal_id: TerminalId,
+        direction: SplitDirection,
+    ) -> std::result::Result<Outcome, String> {
+        if self.terminal_count() >= MAX_TERMINALS {
+            return Err(format!("terminal limit ({MAX_TERMINALS}) reached"));
+        }
+        let (workspace_index, terminal_index) = self
+            .terminal_location(terminal_id)
+            .ok_or_else(|| format!("unknown terminal {terminal_id}"))?;
+        let workspace_id = self.workspaces[workspace_index].id;
+        if self.clients[&client_id].active_workspace != workspace_id {
+            return Err(format!(
+                "terminal {terminal_id} is not in the active workspace"
+            ));
+        }
+        if self.clients[&client_id]
+            .selected
+            .get(&workspace_id)
+            .copied()
+            .flatten()
+            != Some(terminal_id)
+        {
+            return Err(format!("terminal {terminal_id} is not selected"));
+        }
+        let tab_index = self.workspaces[workspace_index]
+            .tabs
+            .iter()
+            .position(|tab| tab.layout.contains(terminal_id))
+            .ok_or_else(|| format!("terminal {terminal_id} is not in a tab"))?;
+        if self.workspaces[workspace_index].tabs[tab_index]
+            .layout
+            .terminal_ids()
+            .len()
+            >= MAX_PANES_PER_TAB
+        {
+            return Err(format!(
+                "pane limit ({MAX_PANES_PER_TAB}) reached for this tab"
+            ));
+        }
+
+        let cwd = {
+            let terminal = &self.workspaces[workspace_index].terminals[terminal_index];
+            terminal
+                .session
+                .cwd()
+                .filter(|path| path.is_dir())
+                .or_else(|| {
+                    terminal
+                        .current_cwd
+                        .is_dir()
+                        .then(|| terminal.current_cwd.clone())
+                })
+                .unwrap_or_else(|| self.default_cwd.clone())
+        };
+        let new_terminal_id = self.take_terminal_id();
+        let number = self.workspaces[workspace_index].next_terminal_number;
+        let terminal = TerminalRecord::spawn(
+            new_terminal_id,
+            format!("Terminal {number}"),
+            cwd,
+            1,
+            DEFAULT_SIZE,
+            &self.shell,
+            self.tx.clone(),
+        )
+        .map_err(|error| format!("cannot split terminal: {error}"))?;
+        let workspace = &mut self.workspaces[workspace_index];
+        if !split_layout(
+            &mut workspace.tabs[tab_index].layout,
+            terminal_id,
+            new_terminal_id,
+            direction,
+        ) {
+            return Err(format!("terminal {terminal_id} is not in a tab"));
+        }
+        workspace.terminals.push(terminal);
+        workspace.next_terminal_number += 1;
+        self.clients
+            .get_mut(&client_id)
+            .unwrap()
+            .selected
+            .insert(workspace_id, Some(new_terminal_id));
         Ok(Outcome::Catalog)
     }
 
@@ -527,7 +644,9 @@ impl Service {
             }
         }
         for (terminal_id, size) in fallback_sizes {
-            self.resize_terminal(terminal_id, size);
+            if !self.terminal_tab_is_split(terminal_id) {
+                self.resize_terminal(terminal_id, size);
+            }
         }
         Ok(Outcome::Catalog)
     }
@@ -540,14 +659,33 @@ impl Service {
         if self.workspaces[workspace_index].terminals.len() == 1 {
             return self.close_workspace(workspace_id);
         }
+        let tab_index = self.workspaces[workspace_index]
+            .tabs
+            .iter()
+            .position(|tab| tab.layout.contains(terminal_id))
+            .ok_or_else(|| format!("terminal {terminal_id} is not in a tab"))?;
+        let (layout, sibling_fallback) = remove_from_layout(
+            self.workspaces[workspace_index].tabs[tab_index]
+                .layout
+                .clone(),
+            terminal_id,
+        );
+        let fallback = if let Some(layout) = layout {
+            self.workspaces[workspace_index].tabs[tab_index].layout = layout;
+            sibling_fallback
+        } else {
+            self.workspaces[workspace_index].tabs.remove(tab_index);
+            self.workspaces[workspace_index]
+                .tabs
+                .get(tab_index)
+                .or_else(|| self.workspaces[workspace_index].tabs.last())
+                .and_then(|tab| tab.layout.terminal_ids().first().copied())
+        };
+
         let mut terminal = self.workspaces[workspace_index]
             .terminals
             .remove(terminal_index);
         terminal.session.terminate();
-        let fallback = self.workspaces[workspace_index]
-            .terminals
-            .first()
-            .map(|terminal| terminal.id);
         let mut fallback_sizes = Vec::new();
         for client in self.clients.values_mut() {
             if client.selected.get(&workspace_id) == Some(&Some(terminal_id)) {
@@ -559,7 +697,9 @@ impl Service {
                 }
             }
         }
-        if let Some(fallback_id) = fallback {
+        if let Some(fallback_id) = fallback
+            && !self.terminal_tab_is_split(fallback_id)
+        {
             for size in fallback_sizes {
                 self.resize_terminal(fallback_id, size);
             }
@@ -667,8 +807,9 @@ impl Service {
             .keys()
             .copied()
             .filter(|client_id| {
-                self.active_terminal(*client_id)
-                    .is_some_and(|terminal_id| self.dirty.contains(&terminal_id))
+                self.visible_terminal_ids(*client_id)
+                    .iter()
+                    .any(|terminal_id| self.dirty.contains(terminal_id))
             })
             .collect::<Vec<_>>();
         self.dirty.clear();
@@ -686,14 +827,16 @@ impl Service {
             .iter()
             .filter_map(|client_id| {
                 self.clients.get(client_id).map(|client| {
+                    let active_terminal = client
+                        .selected
+                        .get(&client.active_workspace)
+                        .copied()
+                        .flatten();
                     (
                         *client_id,
                         client.active_workspace,
-                        client
-                            .selected
-                            .get(&client.active_workspace)
-                            .copied()
-                            .flatten(),
+                        active_terminal,
+                        self.visible_terminal_ids(*client_id),
                         client.ack,
                         client.outbox.clone(),
                     )
@@ -702,7 +845,7 @@ impl Service {
             .collect::<Vec<_>>();
         let terminal_ids = specs
             .iter()
-            .filter_map(|(_, _, terminal_id, _, _)| *terminal_id)
+            .flat_map(|(_, _, _, terminal_ids, _, _)| terminal_ids.iter().copied())
             .collect::<HashSet<_>>();
         let mut screens: HashMap<TerminalId, Screen> = HashMap::new();
         for terminal_id in terminal_ids {
@@ -713,17 +856,23 @@ impl Service {
                 screens.insert(terminal_id, screen);
             }
         }
-        for (client_id, active_workspace, active_terminal, ack, outbox) in specs {
-            let terminal = active_terminal.and_then(|terminal_id| {
-                let (workspace_index, terminal_index) = self.terminal_location(terminal_id)?;
-                let record = &self.workspaces[workspace_index].terminals[terminal_index];
-                Some(TerminalFrame {
-                    id: terminal_id,
-                    shell_pid: record.session.pid,
-                    screen: screens.get(&terminal_id)?.clone(),
-                    exited: record.exited.clone(),
+        for (client_id, active_workspace, active_terminal, terminal_ids, ack, outbox) in specs {
+            let terminals = terminal_ids
+                .into_iter()
+                .filter_map(|terminal_id| {
+                    let (workspace_index, terminal_index) = self.terminal_location(terminal_id)?;
+                    let record = &self.workspaces[workspace_index].terminals[terminal_index];
+                    Some(TerminalFrame {
+                        id: terminal_id,
+                        shell_pid: record.session.pid,
+                        screen: screens.get(&terminal_id)?.clone(),
+                        exited: record.exited.clone(),
+                    })
                 })
-            });
+                .collect::<Vec<_>>();
+            let terminal = active_terminal
+                .and_then(|terminal_id| terminals.iter().find(|frame| frame.id == terminal_id))
+                .cloned();
             outbox.view(Event::View {
                 state: ViewState {
                     core_pid: std::process::id(),
@@ -732,6 +881,7 @@ impl Service {
                     workspaces: self.catalog(client_id),
                     active_workspace,
                     active_terminal,
+                    terminals,
                     terminal,
                 },
             });
@@ -772,6 +922,7 @@ impl Service {
                         .iter()
                         .map(TerminalRecord::info)
                         .collect(),
+                    tabs: workspace.tabs.clone(),
                 }
             })
             .collect()
@@ -829,10 +980,43 @@ impl Service {
             .flatten()
     }
 
+    fn visible_terminal_ids(&self, client_id: ClientId) -> Vec<TerminalId> {
+        let Some(client) = self.clients.get(&client_id) else {
+            return Vec::new();
+        };
+        let Some(selected) = client
+            .selected
+            .get(&client.active_workspace)
+            .copied()
+            .flatten()
+        else {
+            return Vec::new();
+        };
+        self.workspaces
+            .iter()
+            .find(|workspace| workspace.id == client.active_workspace)
+            .and_then(|workspace| {
+                workspace
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.layout.contains(selected))
+            })
+            .map_or_else(Vec::new, |tab| tab.layout.terminal_ids())
+    }
+
+    fn terminal_tab_is_split(&self, terminal_id: TerminalId) -> bool {
+        self.workspaces.iter().any(|workspace| {
+            workspace
+                .tabs
+                .iter()
+                .any(|tab| tab.layout.contains(terminal_id) && tab.layout.terminal_ids().len() > 1)
+        })
+    }
+
     fn terminal_is_visible(&self, terminal_id: TerminalId) -> bool {
         self.clients
             .keys()
-            .any(|client_id| self.active_terminal(*client_id) == Some(terminal_id))
+            .any(|client_id| self.visible_terminal_ids(*client_id).contains(&terminal_id))
     }
 
     fn terminal_location(&self, terminal_id: TerminalId) -> Option<(usize, usize)> {
@@ -871,6 +1055,89 @@ impl Service {
         for workspace in &mut self.workspaces {
             for terminal in &mut workspace.terminals {
                 terminal.session.terminate();
+            }
+        }
+    }
+}
+
+fn split_layout(
+    layout: &mut PaneLayout,
+    terminal_id: TerminalId,
+    new_terminal_id: TerminalId,
+    direction: SplitDirection,
+) -> bool {
+    match layout {
+        PaneLayout::Leaf { terminal_id: id } if *id == terminal_id => {
+            *layout = PaneLayout::Split {
+                direction,
+                first: Box::new(PaneLayout::Leaf { terminal_id }),
+                second: Box::new(PaneLayout::Leaf {
+                    terminal_id: new_terminal_id,
+                }),
+            };
+            true
+        }
+        PaneLayout::Leaf { .. } => false,
+        PaneLayout::Split { first, second, .. } => {
+            split_layout(first, terminal_id, new_terminal_id, direction)
+                || split_layout(second, terminal_id, new_terminal_id, direction)
+        }
+    }
+}
+
+fn remove_from_layout(
+    layout: PaneLayout,
+    terminal_id: TerminalId,
+) -> (Option<PaneLayout>, Option<TerminalId>) {
+    match layout {
+        PaneLayout::Leaf { terminal_id: id } if id == terminal_id => (None, None),
+        leaf @ PaneLayout::Leaf { .. } => (Some(leaf), None),
+        PaneLayout::Split {
+            direction,
+            first,
+            second,
+        } => {
+            if first.contains(terminal_id) {
+                let (first, fallback) = remove_from_layout(*first, terminal_id);
+                match first {
+                    Some(first) => (
+                        Some(PaneLayout::Split {
+                            direction,
+                            first: Box::new(first),
+                            second,
+                        }),
+                        fallback,
+                    ),
+                    None => {
+                        let fallback = second.terminal_ids().first().copied();
+                        (Some(*second), fallback)
+                    }
+                }
+            } else if second.contains(terminal_id) {
+                let (second, fallback) = remove_from_layout(*second, terminal_id);
+                match second {
+                    Some(second) => (
+                        Some(PaneLayout::Split {
+                            direction,
+                            first,
+                            second: Box::new(second),
+                        }),
+                        fallback,
+                    ),
+                    None => {
+                        let fallback = first.terminal_ids().first().copied();
+                        (Some(*first), fallback)
+                    }
+                }
+            } else {
+                (
+                    Some(PaneLayout::Split {
+                        direction,
+                        first,
+                        second,
+                    }),
+                    None,
+                )
             }
         }
     }

@@ -10,8 +10,63 @@ pub const MAX_COLS: u16 = 300;
 pub const MAX_ROWS: u16 = 120;
 pub const MAX_WORKSPACES: usize = 16;
 pub const MAX_TERMINALS: usize = 64;
+/// Bound the number of full terminal frames carried in one client view.
+pub const MAX_PANES_PER_TAB: usize = 8;
 pub type WorkspaceId = u64;
 pub type TerminalId = u64;
+
+/// Horizontal splits stack panes top/bottom; vertical splits place them side by side.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SplitDirection {
+    Horizontal,
+    Vertical,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PaneLayout {
+    Leaf {
+        terminal_id: TerminalId,
+    },
+    Split {
+        direction: SplitDirection,
+        first: Box<PaneLayout>,
+        second: Box<PaneLayout>,
+    },
+}
+
+impl PaneLayout {
+    pub fn terminal_ids(&self) -> Vec<TerminalId> {
+        let mut ids = Vec::new();
+        self.collect_terminal_ids(&mut ids);
+        ids
+    }
+
+    pub fn contains(&self, id: TerminalId) -> bool {
+        match self {
+            Self::Leaf { terminal_id } => *terminal_id == id,
+            Self::Split { first, second, .. } => first.contains(id) || second.contains(id),
+        }
+    }
+
+    fn collect_terminal_ids(&self, ids: &mut Vec<TerminalId>) {
+        match self {
+            Self::Leaf { terminal_id } => ids.push(*terminal_id),
+            Self::Split { first, second, .. } => {
+                first.collect_terminal_ids(ids);
+                second.collect_terminal_ids(ids);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TabInfo {
+    /// Stable tab identity, initially equal to the tab's first terminal ID.
+    pub id: TerminalId,
+    pub layout: PaneLayout,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Cell {
@@ -86,6 +141,7 @@ pub struct WorkspaceInfo {
     pub directory: String,
     pub accent: WorkspaceAccent,
     pub terminals: Vec<TerminalInfo>,
+    pub tabs: Vec<TabInfo>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -107,6 +163,9 @@ pub struct ViewState {
     /// Zero when no workspaces remain; workspace IDs are always nonzero.
     pub active_workspace: WorkspaceId,
     pub active_terminal: Option<TerminalId>,
+    /// Frames for every pane in this client's active tab, in layout order.
+    pub terminals: Vec<TerminalFrame>,
+    /// The selected frame, retained for callers that only support one terminal.
     pub terminal: Option<TerminalFrame>,
 }
 
@@ -151,6 +210,11 @@ pub enum Command {
     },
     SelectTerminal {
         terminal_id: TerminalId,
+    },
+    /// Split the selected pane, placing the new terminal second in the split.
+    SplitTerminal {
+        terminal_id: TerminalId,
+        direction: SplitDirection,
     },
     /// Explicitly end this terminal, including its running process.
     /// Closing the final terminal also removes its workspace.
@@ -256,6 +320,48 @@ mod tests {
             }
         ));
     }
+    #[test]
+    fn pane_layout_helpers_and_schema() {
+        let layout = PaneLayout::Split {
+            direction: SplitDirection::Horizontal,
+            first: Box::new(PaneLayout::Leaf { terminal_id: 7 }),
+            second: Box::new(PaneLayout::Split {
+                direction: SplitDirection::Vertical,
+                first: Box::new(PaneLayout::Leaf { terminal_id: 8 }),
+                second: Box::new(PaneLayout::Leaf { terminal_id: 9 }),
+            }),
+        };
+        assert_eq!(layout.terminal_ids(), vec![7, 8, 9]);
+        assert!(layout.contains(8));
+        assert!(!layout.contains(10));
+        assert_eq!(
+            serde_json::to_value(&layout).unwrap(),
+            serde_json::json!({
+                "type": "split",
+                "direction": "horizontal",
+                "first": {"type": "leaf", "terminal_id": 7},
+                "second": {
+                    "type": "split",
+                    "direction": "vertical",
+                    "first": {"type": "leaf", "terminal_id": 8},
+                    "second": {"type": "leaf", "terminal_id": 9}
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(Command::SplitTerminal {
+                terminal_id: 7,
+                direction: SplitDirection::Vertical,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "type": "split_terminal",
+                "terminal_id": 7,
+                "direction": "vertical"
+            })
+        );
+    }
+
     #[test]
     fn workspace_accents_round_trip() {
         for accent in WorkspaceAccent::ALL {

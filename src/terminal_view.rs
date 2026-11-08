@@ -3,7 +3,7 @@ use crate::{
     State,
     settings::{Settings, Theme},
 };
-use griz_protocol::Screen;
+use griz_protocol::{Screen, TerminalId};
 use rune::{Color, El, Span, TextStyle, el, text};
 
 pub const PAD: f32 = 12.0;
@@ -42,13 +42,19 @@ pub fn grid_for(width: f32, height: f32, settings: &Settings) -> (u16, u16) {
     )
 }
 
-pub fn viewport(state: &State) -> El {
+pub fn viewport(state: &State, id: Option<TerminalId>, split: bool) -> El {
     let (cell_width, cell_height) = cell_size(&state.settings);
+    let active = id == state.active_terminal();
+    let screen = id.and_then(|id| state.pane_frame(id)).map(|t| &t.screen);
     let mut viewport = el()
-        .key("terminal")
+        .key(if split {
+            format!("terminal-viewport-{}", id.unwrap_or(0))
+        } else {
+            "terminal".into()
+        })
         .role("region")
         .label("Terminal")
-        .focusable(true)
+        .focusable(active)
         .grow(1.0)
         .w_full()
         .min_h(0.0)
@@ -57,23 +63,36 @@ pub fn viewport(state: &State) -> El {
         .no_focus_ring()
         .clip_soft(0.0)
         .instant_changes()
-        .on_key(crate::terminal_key)
-        .on_layout_tx(|state: &mut State, [_, _, width, height], tx| {
-            state.viewport_size = Some((width, height));
-            let grid = grid_for(width, height, &state.settings);
-            if state.grid != grid {
-                state.grid = grid;
-                state.resize();
+        .on_press_tx(move |state: &mut State, tx| {
+            if let Some(id) = id
+                && state.active_terminal() != Some(id)
+            {
+                state.change(crate::Command::SelectTerminal { terminal_id: id });
+            }
+            tx.blur();
+        })
+        .on_key(move |state: &mut State, event, tx| {
+            // Keyboard focus can outlive a catalog change. Never route a stale pane's
+            // keystrokes to the newly selected terminal.
+            if id != state.active_terminal() {
+                return true;
+            }
+            crate::terminal_key(state, event, tx)
+        })
+        .on_layout_tx(move |state: &mut State, [_, _, width, height], tx| {
+            if let Some(id) = id {
+                state.layout_pane(id, width, height);
             }
             tx.live_only();
         });
-    if let Some(screen) = state.screen() {
-        viewport = viewport.child(screen_grid(
-            screen,
-            &state.settings,
-            cell_width,
-            cell_height,
-        ));
+    if let Some(screen) = screen {
+        viewport = viewport.child(
+            screen_grid(screen, &state.settings, cell_width, cell_height, active).key(if split {
+                format!("screen-grid-{}", id.unwrap_or(0))
+            } else {
+                "screen-grid".into()
+            }),
+        );
     } else {
         viewport = viewport.child(
             text(state.status.clone())
@@ -82,11 +101,8 @@ pub fn viewport(state: &State) -> El {
                 .absolute(PAD, PAD),
         );
     }
-    if !state.preedit.is_empty() {
-        let (x, y) = state
-            .screen()
-            .map(|s| (s.cursor_x, s.cursor_y))
-            .unwrap_or_default();
+    if active && !state.preedit.is_empty() {
+        let (x, y) = screen.map(|s| (s.cursor_x, s.cursor_y)).unwrap_or_default();
         viewport = viewport.child(
             text(state.preedit.clone())
                 .font(font(&state.settings, cell_height, false, false))
@@ -109,7 +125,13 @@ fn font(settings: &Settings, height: f32, bold: bool, italic: bool) -> TextStyle
     if italic { style.italic() } else { style }
 }
 
-fn screen_grid(screen: &Screen, settings: &Settings, cell_width: f32, cell_height: f32) -> El {
+fn screen_grid(
+    screen: &Screen,
+    settings: &Settings,
+    cell_width: f32,
+    cell_height: f32,
+    active: bool,
+) -> El {
     let mut grid = el()
         .key("screen-grid")
         .size(
@@ -152,7 +174,11 @@ fn screen_grid(screen: &Screen, settings: &Settings, cell_width: f32, cell_heigh
             grid = grid.child(glyph);
         }
     }
-    if screen.cursor_visible && screen.cursor_x < screen.cols && screen.cursor_y < screen.rows {
+    if active
+        && screen.cursor_visible
+        && screen.cursor_x < screen.cols
+        && screen.cursor_y < screen.rows
+    {
         grid = grid.child(
             el().key("terminal-cursor")
                 .ime_cursor()
