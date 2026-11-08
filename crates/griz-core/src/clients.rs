@@ -1,6 +1,6 @@
 //! Per-client bounded delivery: one replaceable View plus a bounded Error queue.
 use crate::{ClientId, Message};
-use griz_protocol::{Event, Request, VERSION, receive, send};
+use griz_protocol::{Event, Request, receive, send};
 use std::collections::VecDeque;
 use std::io;
 use std::net::Shutdown;
@@ -122,19 +122,13 @@ fn connection(
             let _ = tx.send(Message::Shutdown);
             return Ok(());
         }
-        Request::Attach {
-            version,
-            cols,
-            rows,
-        } if version == VERSION => (cols, rows),
+        Request::Attach { cols, rows } => (cols, rows),
         _ => {
             return send(
                 &mut stream,
                 &Event::Error {
                     serial: None,
-                    message: format!(
-                        "expected Attach with protocol version {VERSION}; rebuild/restart the app and core together"
-                    ),
+                    message: "expected an Attach request".into(),
                 },
             );
         }

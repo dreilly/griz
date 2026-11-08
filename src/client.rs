@@ -1,6 +1,6 @@
 //! The GUI never owns a PTY or emulator. It only attaches to the local service.
 use griz_protocol::{
-    Command as CoreCommand, Event, Request, VERSION, ViewState, receive, send, socket_path,
+    Command as CoreCommand, Event, Request, ViewState, receive, send, socket_path,
 };
 use rune::Waker;
 use std::fs::OpenOptions;
@@ -67,7 +67,6 @@ impl Client {
                 send(
                     &mut stream,
                     &Request::Attach {
-                        version: VERSION,
                         cols: grid.0,
                         rows: grid.1,
                     },
@@ -109,7 +108,7 @@ impl Client {
                 && !stop.load(Ordering::Acquire)
             {
                 let mut inbox = inbox.lock().unwrap();
-                // Preserve a useful protocol-version error instead of replacing it with EOF.
+                // Preserve the service's error instead of replacing it with EOF.
                 if inbox.error.is_none() {
                     inbox.error = Some(format!("Disconnected: {e}"));
                 }

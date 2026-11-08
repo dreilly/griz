@@ -1,9 +1,9 @@
-//! Versioned local IPC shared by the GUI and the session service. No GUI or FFI dependencies.
+//! Development IPC shared by the GUI and the session service. No GUI or FFI dependencies.
+//! The app and core evolve together; wire compatibility is not maintained during development.
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-pub const VERSION: u32 = 5;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 256 * 1024;
 pub const MAX_COLS: u16 = 300;
@@ -48,17 +48,40 @@ pub struct TerminalInfo {
     pub exited: Option<String>,
 }
 
+/// Shared workspace chrome color; independent of terminal ANSI colors.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceAccent {
+    Blue,
+    Purple,
+    Pink,
+    Orange,
+    #[default]
+    Green,
+    Graphite,
+}
+
+impl WorkspaceAccent {
+    pub const ALL: [Self; 6] = [
+        Self::Blue,
+        Self::Purple,
+        Self::Pink,
+        Self::Orange,
+        Self::Green,
+        Self::Graphite,
+    ];
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceInfo {
     pub id: WorkspaceId,
     /// Display label: a custom name, or the selected terminal's directory basename.
     pub name: String,
     /// None means the name follows this client's selected terminal automatically.
-    #[serde(default)]
     pub custom_name: Option<String>,
     /// Selected terminal's full directory for display, abbreviating HOME with ~.
-    #[serde(default)]
     pub directory: String,
+    pub accent: WorkspaceAccent,
     pub terminals: Vec<TerminalInfo>,
 }
 
@@ -87,7 +110,7 @@ pub struct ViewState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    Attach { version: u32, cols: u16, rows: u16 },
+    Attach { cols: u16, rows: u16 },
     Command { serial: u64, command: Command },
     Shutdown,
 }
@@ -105,6 +128,11 @@ pub enum Command {
     RenameWorkspace {
         workspace_id: WorkspaceId,
         name: String,
+    },
+    /// Change workspace chrome for every client without changing their selections.
+    SetWorkspaceAccent {
+        workspace_id: WorkspaceId,
+        accent: WorkspaceAccent,
     },
     /// Remove the workspace and end all of its terminals and running processes.
     CloseWorkspace {
@@ -225,6 +253,26 @@ mod tests {
             }
         ));
     }
+    #[test]
+    fn workspace_accents_round_trip() {
+        for accent in WorkspaceAccent::ALL {
+            let mut bytes = Vec::new();
+            send(
+                &mut bytes,
+                &Command::SetWorkspaceAccent {
+                    workspace_id: 2,
+                    accent,
+                },
+            )
+            .unwrap();
+            assert!(matches!(
+                receive::<Command>(&mut bytes.as_slice()).unwrap(),
+                Command::SetWorkspaceAccent { workspace_id: 2, accent: decoded } if decoded == accent
+            ));
+        }
+        assert!(serde_json::from_str::<WorkspaceAccent>(r#""not-a-color""#).is_err());
+    }
+
     #[test]
     fn oversized_input_is_rejected_before_allocation() {
         assert!(receive::<Request>(&mut u32::MAX.to_be_bytes().as_slice()).is_err());

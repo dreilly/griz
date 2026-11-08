@@ -1,7 +1,5 @@
-//! Exercise the real service, PTYs, shells, terminal parser, and versioned IPC.
-use griz_protocol::{
-    Command as CoreCommand, Event, Request, Screen, VERSION, ViewState, receive, send,
-};
+//! Exercise the real service, PTYs, shells, terminal parser, and local IPC.
+use griz_protocol::{Command as CoreCommand, Event, Request, Screen, ViewState, receive, send};
 use std::fs;
 use std::io;
 use std::os::unix::fs::DirBuilderExt;
@@ -11,6 +9,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[path = "session/accents.rs"]
+mod accents;
 #[path = "session/naming.rs"]
 mod naming;
 #[path = "session/workspaces.rs"]
@@ -66,15 +66,7 @@ impl Service {
         stream
             .set_read_timeout(Some(Duration::from_secs(4)))
             .unwrap();
-        send(
-            &mut stream,
-            &Request::Attach {
-                version: VERSION,
-                cols,
-                rows,
-            },
-        )
-        .unwrap();
+        send(&mut stream, &Request::Attach { cols, rows }).unwrap();
         stream
     }
 }
@@ -600,7 +592,7 @@ fn invalid_creation_is_atomic_and_workspace_switch_remembers_the_selected_tab() 
 }
 
 #[test]
-fn wrong_version_and_second_instance_are_rejected() {
+fn commands_before_attach_and_second_instance_are_rejected() {
     let service = Service::start();
     let status = Command::new(env!("CARGO_BIN_EXE_griz-core"))
         .env("GRIZ_SOCKET", &service.path)
@@ -613,10 +605,9 @@ fn wrong_version_and_second_instance_are_rejected() {
     let mut stream = UnixStream::connect(&service.path).unwrap();
     send(
         &mut stream,
-        &Request::Attach {
-            version: 99,
-            cols: 80,
-            rows: 24,
+        &Request::Command {
+            serial: 1,
+            command: CoreCommand::SelectWorkspace { workspace_id: 1 },
         },
     )
     .unwrap();

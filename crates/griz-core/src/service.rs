@@ -4,7 +4,7 @@ use crate::validation::{directory_label, directory_path, validate_cwd, workspace
 use crate::{ClientId, Message};
 use griz_protocol::{
     Command, Event, MAX_INPUT, MAX_TERMINALS, MAX_WORKSPACES, Screen, TerminalFrame, TerminalId,
-    TerminalInfo, ViewState, WorkspaceId, WorkspaceInfo, dimensions,
+    TerminalInfo, ViewState, WorkspaceAccent, WorkspaceId, WorkspaceInfo, dimensions,
 };
 use griz_vt::Terminal;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -69,6 +69,7 @@ impl TerminalRecord {
 struct Workspace {
     id: WorkspaceId,
     custom_name: Option<String>,
+    accent: WorkspaceAccent,
     terminals: Vec<TerminalRecord>,
     next_terminal_number: usize,
 }
@@ -117,6 +118,7 @@ impl Service {
             workspaces: vec![Workspace {
                 id: 1,
                 custom_name: None,
+                accent: WorkspaceAccent::default(),
                 terminals: vec![terminal],
                 next_terminal_number: 2,
             }],
@@ -314,6 +316,18 @@ impl Service {
                 self.workspaces[index].custom_name = workspace_name(&name)?;
                 Ok(Outcome::Catalog)
             }
+            Command::SetWorkspaceAccent {
+                workspace_id,
+                accent,
+            } => {
+                let workspace = self
+                    .workspaces
+                    .iter_mut()
+                    .find(|workspace| workspace.id == workspace_id)
+                    .ok_or_else(|| format!("unknown workspace {workspace_id}"))?;
+                workspace.accent = accent;
+                Ok(Outcome::Catalog)
+            }
             Command::CloseWorkspace { workspace_id } => self.close_workspace(workspace_id),
             Command::SelectWorkspace { workspace_id } => {
                 let workspace = self
@@ -422,6 +436,7 @@ impl Service {
         self.workspaces.push(Workspace {
             id: workspace_id,
             custom_name,
+            accent: WorkspaceAccent::default(),
             terminals: vec![terminal],
             next_terminal_number: 2,
         });
@@ -750,6 +765,7 @@ impl Service {
                         .unwrap_or_else(|| directory_label(cwd)),
                     custom_name: workspace.custom_name.clone(),
                     directory: directory_path(cwd),
+                    accent: workspace.accent,
                     terminals: workspace
                         .terminals
                         .iter()

@@ -29,21 +29,13 @@ Rune is the sibling checkout at `../rune`, tested at dev revision
 `7256c7c2afb605862ccfe600a469df7330509efb`. Rust is pinned to its toolchain, 1.99.1.
 For a standalone checkout later, replace the Rune path dependency with a pinned git revision.
 
-### Updating from an older version
+### Development
 
-Live workspace labels use **protocol v5**. Rebuilding does not replace a running
-service. The old and new versions cannot attach to each other; a version mismatch
-is reported rather than silently replacing live shells.
+Griz is pre-release. The GUI and core evolve together; breaking changes are expected,
+and IPC compatibility is not maintained. Rebuild both processes after changes.
 
-**Only when you are ready to end the old service's shells**, close the old GUI,
-then run:
-
-```sh
-./target/debug/griz-core --stop # ends all terminals owned by that service
-./scripts/dev.sh
-```
-
-To try the new version **without disturbing existing sessions**, use a separate endpoint:
+Rebuilding does not replace a running core, and stopping the core ends its terminals.
+To test changes **without disturbing existing sessions**, use a separate endpoint:
 
 ```sh
 preview_dir="$(mktemp -d /tmp/griz-preview.XXXXXX)"
@@ -83,18 +75,22 @@ connection, and a scratch shell, all in unrelated directories.
 - Click **+ Terminal** to open another independent shell. Its optional absolute
   starting directory applies only to that terminal. Blank uses the service's
   launch directory. You can also `cd` independently in any shell.
-- Click tabs to switch terminals. Right-click any workspace for **Rename workspace…**
-  or **Close workspace…**. Rename changes only that workspace's name. Clearing the
-  name uses that workspace’s selected terminal directory, even for an inactive workspace.
+- Click tabs to switch terminals. Right-click any workspace for **Rename workspace…**,
+  **Close workspace…**, and an **Accent color** swatch row: blue, purple, pink, orange,
+  green, or graphite, using Rune’s accent palette. Green is the default. The workspace’s
+  selected sidebar entry, active terminal tab, and pane outline/focus highlight share
+  its accent; terminal ANSI colors are unchanged. Color changes sync to every connected
+  window and survive GUI reconnects for the lifetime of the workspace in the service.
+  Picking a color on an inactive workspace does not select it. Escape or clicking outside
+  dismisses the menu. Rename changes only that workspace's name. Clearing the name uses
+  that workspace’s selected terminal directory, even for an inactive workspace.
 - **Close workspace** asks for confirmation, then removes the workspace and ends all
   of its terminals and foreground jobs, for every connected window. Affected windows
   switch to a neighboring workspace, keeping their remembered tab there. Closing the
-  last workspace hides the terminal pane and shows a centered, muted ASCII-art `$`
-  followed by a softly pulsing underscore cursor (steady with Reduce Motion enabled).
-  The artwork uses small, fixed-size monospace characters, independent of the app font
-  settings, and only shrinks to fit smaller panes. The **Create a workspace to get
-  started** button underneath uses normal UI font scaling and immediately creates a
-  workspace with its directory-based default name, even with the sidebar hidden.
+  last workspace hides the terminal pane and shows only the **Create a workspace to
+  get started** button, centered in the empty area. It uses normal UI font scaling
+  and immediately creates a workspace with its directory-based default name, even
+  with the sidebar hidden.
 - **Close tab** asks for confirmation, then ends that terminal's shell and
   foreground job. Other terminals are untouched. Closing the last tab also closes
   its workspace for every connected window, using the same neighboring-workspace
@@ -114,7 +110,7 @@ separate operations. Tab renaming/reordering and split panes are not implemented
   unselected or no GUI is attached.
 - **`griz`** is the disposable Rune client. It draws the selected terminal and sends
   addressed commands. It owns no PTY and does not link libghostty in production.
-- **`griz-protocol`** defines versioned, length-prefixed JSON over a private local
+- **`griz-protocol`** defines length-prefixed JSON over a private local
   Unix socket. It has no Rune or terminal-library dependencies.
 - **`griz-vt`** wraps the official C API through a small C shim compiled against the
   release headers. Styled cells come from RenderState, not plain-text formatting.
@@ -255,13 +251,13 @@ Integration tests use isolated real services, PTYs, and shells. They cover termi
 state/directory isolation, output while unselected/detached, independent client
 selections, remembering tabs across workspace switches, creation/rename validation,
 resize, stale IDs, continuous output, explicit close/foreground termination,
-ended-shell replacement, version rejection, and single-instance ownership.
+ended-shell replacement, request validation, and single-instance ownership.
 GUI tests cover navigation, dialogs, paste, toolbar focus, input routing while
 selection acknowledgements are pending, empty workspaces, and ended-shell recovery.
 Other tests exercise libghostty's colors/cursor/Unicode/alternate screen/query
 responses and Rune's cell placement.
 
-For an offline GUI capture, save a protocol v5 **`view` event** (including its catalog
+For an offline GUI capture, save a current **`view` event** (including its catalog
 and selected terminal) into a JSON file:
 
 ```sh

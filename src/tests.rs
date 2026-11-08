@@ -2,6 +2,8 @@
 mod font_and_close;
 #[path = "tests/settings.rs"]
 mod settings_tests;
+#[path = "tests/workspace_accents.rs"]
+mod workspace_accents;
 #[path = "tests/workspace_labels.rs"]
 mod workspace_labels;
 
@@ -29,6 +31,7 @@ fn snapshot() -> ViewState {
                 name: "Daily".into(),
                 custom_name: Some("Daily".into()),
                 directory: "/tmp".into(),
+                accent: griz_protocol::WorkspaceAccent::default(),
                 terminals: vec![info(1), info(2)],
             },
             WorkspaceInfo {
@@ -36,6 +39,7 @@ fn snapshot() -> ViewState {
                 name: "Other".into(),
                 custom_name: Some("Other".into()),
                 directory: "/tmp".into(),
+                accent: griz_protocol::WorkspaceAccent::default(),
                 terminals: vec![info(3)],
             },
         ],
@@ -493,15 +497,12 @@ fn workspace_context_menu_renames_the_clicked_workspace_without_selecting_it() {
     );
     commands(&outgoing);
     workspace_menu(&mut rt, 2);
-    assert_eq!(
-        rt.popup_menu(),
-        Some(
-            &rune::PopupMenu::new()
-                .item(rune::PopupItem::new("rename", "Rename workspace…"))
-                .separator()
-                .item(rune::PopupItem::new("close", "Close workspace…"))
-        )
-    );
+    assert!(rt.find("workspace-context-menu").is_some());
+    assert!(rt.find("workspace-menu-rename").is_some());
+    assert!(rt.find("workspace-menu-close").is_some());
+    for name in rune::tok::ACCENT_NAMES {
+        assert!(rt.find(&format!("workspace-accent-{name}")).is_some());
+    }
     assert!(commands(&outgoing).is_empty());
     assert_eq!(rt.state.snapshot.as_ref().unwrap().active_workspace, 1);
     pick_workspace_menu(&mut rt, "rename");
@@ -521,14 +522,13 @@ fn workspace_menu(rt: &mut Runtime<State>, id: WorkspaceId) {
     let (x, y) = rt.find(&format!("workspace-{id}")).unwrap();
     rt.secondary_down(x, y);
     rt.secondary_up(x, y);
-    rt.frame(0.0);
-}
-
-fn pick_workspace_menu(rt: &mut Runtime<State>, item: &str) {
-    rt.resolve_popup(Some(item)).unwrap();
     for _ in 0..60 {
         rt.frame(1.0 / 60.0);
     }
+}
+
+fn pick_workspace_menu(rt: &mut Runtime<State>, item: &str) {
+    click(rt, &format!("workspace-menu-{item}"));
 }
 
 #[test]
@@ -538,7 +538,7 @@ fn workspace_close_confirms_the_clicked_id_and_supports_cancellation() {
     rt.frame(0.0);
     commands(&outgoing);
     workspace_menu(&mut rt, 2);
-    rt.resolve_popup(None).unwrap();
+    rt.key(rune::Key::Escape.into());
     rt.frame(0.0);
     assert!(rt.state.dialog.is_none());
     workspace_menu(&mut rt, 2);
@@ -572,22 +572,24 @@ fn workspace_menus_are_safe_when_disconnected_pending_or_target_removed() {
     commands(&outgoing);
     workspace_menu(&mut rt, 2);
     rt.update(|s, _| {
-        s.snapshot.as_mut().unwrap().workspaces.remove(1);
+        let mut updated = s.snapshot.clone().unwrap();
+        updated.workspaces.remove(1);
+        s.apply(updated);
     });
-    rt.resolve_popup(Some("close")).unwrap();
     rt.frame(0.0);
+    assert!(rt.find("workspace-context-menu").is_none());
     assert!(rt.state.dialog.is_none());
     rt.update(|s, _| s.pending = Some(999));
     rt.frame(0.0);
     workspace_menu(&mut rt, 1);
-    assert!(rt.popup_menu().is_none());
+    assert!(rt.find("workspace-context-menu").is_none());
     rt.update(|s, _| {
         s.pending = None;
         s.online = false;
     });
     rt.frame(0.0);
     workspace_menu(&mut rt, 1);
-    assert!(rt.popup_menu().is_none());
+    assert!(rt.find("workspace-context-menu").is_none());
     assert!(commands(&outgoing).is_empty());
 }
 
@@ -634,7 +636,7 @@ fn closing_the_last_workspace_leaves_creation_available() {
 }
 
 #[test]
-fn empty_workspace_placeholder_is_centered_scales_and_disappears_when_a_workspace_opens() {
+fn empty_workspace_button_is_centered_scales_and_disappears_when_a_workspace_opens() {
     for sidebar_open in [true, false] {
         let (mut state, outgoing) = mock();
         state.sidebar_open = sidebar_open;
@@ -649,14 +651,22 @@ fn empty_workspace_placeholder_is_centered_scales_and_disappears_when_a_workspac
             rt.frame(1.0 / 60.0);
         }
         let ([x, y, width, height], _) = rt.presented("empty-workspaces").unwrap();
-        let ([ix, iy, iw, ih], _) = rt.presented("empty-workspaces-icon").unwrap();
         let ([mx, my, mw, mh], _) = rt.presented("empty-workspaces-message").unwrap();
-        assert!((ix + iw / 2.0 - (x + width / 2.0)).abs() < 1.0);
         assert!((mx + mw / 2.0 - (x + width / 2.0)).abs() < 1.0);
-        let ([_, by, _, bh], _) = rt.presented("empty-workspaces-create").unwrap();
-        assert!(((iy + by + bh) / 2.0 - (y + height / 2.0)).abs() < 1.0);
-        assert!(iw > 80.0 && ih > 60.0);
-        assert!(my > iy + ih);
+        let ([bx, by, bw, bh], _) = rt.presented("empty-workspaces-create").unwrap();
+        assert!((bx + bw / 2.0 - (x + width / 2.0)).abs() < 1.0);
+        assert!((by + bh / 2.0 - (y + height / 2.0)).abs() < 1.0);
+        assert!(my >= by && my + mh <= by + bh);
+        for key in [
+            "empty-workspaces-icon",
+            "empty-workspaces-symbol",
+            "empty-workspaces-cursor",
+        ] {
+            assert!(
+                rt.find(key).is_none(),
+                "unexpected {key} in the empty state"
+            );
+        }
         assert!(mx >= x && mx + mw <= x + width);
         assert!(
             rt.elements()
@@ -672,7 +682,6 @@ fn empty_workspace_placeholder_is_centered_scales_and_disappears_when_a_workspac
             rt.frame(1.0 / 60.0);
         }
         assert!(size(&rt, "empty-workspaces-message")[1] > mh);
-        assert!(size(&rt, "empty-workspaces-icon")[1] <= height - 48.0);
         rt.update(|s, _| s.apply(snapshot()));
         rt.frame(0.0);
         assert!(rt.find("empty-workspaces").is_none());
@@ -692,7 +701,7 @@ fn empty_workspace_placeholder_is_centered_scales_and_disappears_when_a_workspac
 }
 
 #[test]
-fn empty_workspace_ascii_prompt_is_restrained_and_fits_after_resizing() {
+fn empty_workspace_button_stays_centered_and_fits_after_resizing() {
     let (mut state, _) = mock();
     let mut empty = snapshot();
     empty.workspaces.clear();
@@ -701,37 +710,6 @@ fn empty_workspace_ascii_prompt_is_restrained_and_fits_after_resizing() {
     empty.terminal = None;
     state.apply(empty);
     let mut rt = make_runtime(state, (1100.0, 720.0));
-    let [width, height] = size(&rt, "empty-workspaces");
-    let [art_width, art_height] = size(&rt, "empty-workspaces-icon");
-    assert!(
-        art_width > width * 0.25 && art_width < width * 0.65,
-        "art should be a compact illustration, got {art_width} of {width} wide"
-    );
-    assert!(
-        art_height > height * 0.25 && art_height < height * 0.5,
-        "art should leave breathing room, got {art_height} of {height} high"
-    );
-    let elements = rt.elements();
-    let art = elements
-        .iter()
-        .find(|e| e.key.as_deref() == Some("empty-workspaces-symbol"))
-        .unwrap()
-        .text
-        .as_deref()
-        .unwrap();
-    assert_eq!(art.lines().count(), 21);
-    assert!(art.chars().all(|ch| " @#%&\n".contains(ch)));
-    assert!(art.contains("@@@@@##@@@@@"));
-    let ([sx, sy, sw, sh], _) = rt.presented("empty-workspaces-symbol").unwrap();
-    let ([cx, cy, cw, ch], _) = rt.presented("empty-workspaces-cursor").unwrap();
-    assert!(
-        cx > sx + sw && cw > ch * 5.0,
-        "underscore cursor must follow the dollar artwork"
-    );
-    assert!(
-        (cy + ch - (sy + sh)).abs() < 1.0,
-        "cursor belongs at the baseline: cursor {cy}+{ch}, symbol {sy}+{sh}"
-    );
     for (viewport, sidebar, font_size) in [
         ((640.0, 420.0), true, 14.0),
         ((640.0, 420.0), true, 28.0),
@@ -747,11 +725,7 @@ fn empty_workspace_ascii_prompt_is_restrained_and_fits_after_resizing() {
             rt.frame(1.0 / 60.0);
         }
         let ([x, y, width, height], _) = rt.presented("empty-workspaces").unwrap();
-        for key in [
-            "empty-workspaces-icon",
-            "empty-workspaces-message",
-            "empty-workspaces-create",
-        ] {
+        for key in ["empty-workspaces-message", "empty-workspaces-create"] {
             let ([cx, cy, cw, ch], _) = rt.presented(key).unwrap();
             assert!(
                 cx >= x && cx + cw <= x + width,
@@ -761,12 +735,14 @@ fn empty_workspace_ascii_prompt_is_restrained_and_fits_after_resizing() {
                 cy >= y && cy + ch <= y + height,
                 "{key} overflows vertically"
             );
+            assert!((cx + cw / 2.0 - (x + width / 2.0)).abs() < 1.0);
+            assert!((cy + ch / 2.0 - (y + height / 2.0)).abs() < 1.0);
         }
     }
 }
 
 #[test]
-fn empty_workspace_art_ignores_font_preferences_but_the_caption_scales() {
+fn empty_workspace_button_label_scales_with_font_preferences() {
     let (mut state, _) = mock();
     state.sidebar_open = false;
     let mut empty = snapshot();
@@ -776,7 +752,6 @@ fn empty_workspace_art_ignores_font_preferences_but_the_caption_scales() {
     empty.terminal = None;
     state.apply(empty);
     let mut rt = make_runtime(state, (1100.0, 720.0));
-    let art_size = size(&rt, "empty-workspaces-icon");
     let caption_height = size(&rt, "empty-workspaces-message")[1];
     for (font_size, font) in [
         (10.0, settings::Font::Menlo),
@@ -790,7 +765,6 @@ fn empty_workspace_art_ignores_font_preferences_but_the_caption_scales() {
         for _ in 0..60 {
             rt.frame(1.0 / 60.0);
         }
-        assert_eq!(size(&rt, "empty-workspaces-icon"), art_size);
         let height = size(&rt, "empty-workspaces-message")[1];
         if font_size < 14.0 {
             assert!(height < caption_height);
@@ -798,42 +772,6 @@ fn empty_workspace_art_ignores_font_preferences_but_the_caption_scales() {
             assert!(height > caption_height);
         }
     }
-}
-
-#[test]
-fn empty_workspace_underscore_cursor_pulses_without_rebuilding_and_respects_reduced_motion() {
-    let (mut state, outgoing) = mock();
-    let mut empty = snapshot();
-    empty.workspaces.clear();
-    empty.active_workspace = 0;
-    empty.active_terminal = None;
-    empty.terminal = None;
-    state.apply(empty);
-    let mut rt = make_runtime(state, (1100.0, 720.0));
-    rt.frame(0.0);
-    let commits = rt.stats.commits;
-    let (bounds, bright) = rt.presented("empty-workspaces-cursor").unwrap();
-    rt.frame(0.8);
-    let (dim_bounds, dim) = rt.presented("empty-workspaces-cursor").unwrap();
-    rt.frame(0.8);
-    let (_, bright_again) = rt.presented("empty-workspaces-cursor").unwrap();
-    assert!(bright > dim + 0.5 && bright_again > dim + 0.5);
-    assert_eq!(bounds, dim_bounds, "pulsing must not change layout");
-    assert_eq!(
-        rt.stats.commits, commits,
-        "pulse is renderer-owned, not a view/poll timer"
-    );
-    assert!(commands(&outgoing).is_empty());
-    rt.set_system_reduced_motion(true);
-    rt.frame(0.0);
-    let (_, still) = rt.presented("empty-workspaces-cursor").unwrap();
-    rt.frame(0.8);
-    assert_eq!(rt.presented("empty-workspaces-cursor").unwrap().1, still);
-    assert!(still > 0.9);
-    assert!(rt.wake_deadline().is_none());
-    rt.update(|s, _| s.apply(snapshot()));
-    rt.frame(0.0);
-    assert!(rt.find("empty-workspaces-cursor").is_none());
 }
 
 #[test]
@@ -1050,7 +988,7 @@ fn disconnected_client_stops_accepting_input_and_keeps_useful_error() {
     let client = state.client.as_ref().unwrap();
     {
         let mut inbox = client.inbox.lock().unwrap();
-        inbox.error = Some("Protocol version mismatch".into());
+        inbox.error = Some("Core is stopping".into());
         inbox.disconnected = true;
     }
     let mut rt = make_runtime(State::default(), (1000.0, 680.0));
@@ -1058,7 +996,7 @@ fn disconnected_client_stops_accepting_input_and_keeps_useful_error() {
         assert!(poll(&mut state, 0.0, tx));
     });
     assert!(!state.online);
-    assert_eq!(state.notice.as_deref(), Some("Protocol version mismatch"));
+    assert_eq!(state.notice.as_deref(), Some("Core is stopping"));
     state.input(b"x".to_vec());
     assert!(commands(&outgoing).is_empty());
 }

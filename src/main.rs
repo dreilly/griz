@@ -5,6 +5,7 @@ mod settings;
 mod settings_ui;
 mod terminal_view;
 mod ui;
+mod workspace_ui;
 
 use griz_protocol::{Command, Event, Screen, TerminalId, ViewState, WorkspaceId, WorkspaceInfo};
 use rune::{App, AppSpec, Ime, KeyEvent, TextEdit, Titlebar, Tx, Waker};
@@ -17,6 +18,7 @@ const TITLEBAR_HEIGHT: f32 = 44.0;
 enum Dialog {
     NewWorkspace,
     RenameWorkspace(WorkspaceId),
+    WorkspaceMenu(WorkspaceId, (f32, f32)),
     CloseWorkspace(WorkspaceId, String),
     NewTerminal(WorkspaceId),
     CloseTerminal(TerminalId, String),
@@ -307,6 +309,14 @@ impl State {
             }
             None => "No terminals in this workspace. Open a terminal to get started.".into(),
         };
+        if let Some(Dialog::WorkspaceMenu(id, _)) = &self.dialog
+            && !snapshot
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.id == *id)
+        {
+            self.dialog = None;
+        }
         self.snapshot = Some(snapshot);
         if self.shell_exited() || old_terminal != self.active_terminal() {
             self.preedit.clear();
@@ -355,8 +365,9 @@ impl State {
         self.draft = TextEdit::new(value);
         self.draft.focused = !matches!(
             dialog,
-            Dialog::CloseTerminal(..) | Dialog::CloseWorkspace(..)
+            Dialog::CloseTerminal(..) | Dialog::CloseWorkspace(..) | Dialog::WorkspaceMenu(..)
         );
+        self.preedit.clear();
         self.dialog = Some(dialog);
         tx.blur();
     }
@@ -380,7 +391,7 @@ impl State {
                 Command::CloseWorkspace { workspace_id }
             }
             Some(Dialog::CloseTerminal(terminal_id, _)) => Command::CloseTerminal { terminal_id },
-            None => return,
+            Some(Dialog::WorkspaceMenu(..)) | None => return,
         };
         self.dialog = None;
         self.change(command);
@@ -408,6 +419,9 @@ fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
         state.notice = Some(error);
     }
     if disconnected {
+        if matches!(state.dialog, Some(Dialog::WorkspaceMenu(..))) {
+            state.dialog = None;
+        }
         state.online = false;
         state.pending = None;
         state.preedit.clear();
@@ -523,7 +537,7 @@ fn main() {
                     initial.apply(state);
                 }
                 Ok(_) => {
-                    eprintln!("griz: --frame requires a protocol v3 view event");
+                    eprintln!("griz: --frame requires a protocol view event");
                     std::process::exit(1);
                 }
                 Err(error) => {
