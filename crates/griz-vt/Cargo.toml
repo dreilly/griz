@@ -1,0 +1,12 @@
+[package]
+name = "griz-vt"
+version = "0.1.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[dependencies]
+griz-protocol = { path = "../griz-protocol" }
+
+[build-dependencies]
+cc = "1"

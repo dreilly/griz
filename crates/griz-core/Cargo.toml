@@ -1,0 +1,11 @@
+[package]
+name = "griz-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+griz-protocol = { path = "../griz-protocol" }
+griz-vt = { path = "../griz-vt" }
+portable-pty = "0.9"
+libc = "0.2"

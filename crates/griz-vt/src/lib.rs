@@ -1,0 +1,358 @@
+//! Safe, single-threaded wrapper around libghostty-vt 1.0.
+
+use griz_protocol::{Cell, Screen};
+use std::error;
+use std::ffi::c_int;
+use std::fmt;
+use std::marker::PhantomData;
+use std::ptr::NonNull;
+use std::rc::Rc;
+use std::slice;
+
+const CELL_BOLD: u8 = 1 << 0;
+const CELL_ITALIC: u8 = 1 << 1;
+const CELL_UNDERLINE: u8 = 1 << 2;
+const INVALID_VALUE: c_int = -2;
+
+#[repr(C)]
+struct GrizVt {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct GrizVtCell {
+    text_offset: usize,
+    text_len: usize,
+    width: u8,
+    fg: [u8; 3],
+    bg: [u8; 3],
+    flags: u8,
+}
+
+#[repr(C)]
+struct GrizVtSnapshot {
+    cols: u16,
+    rows: u16,
+    cursor_x: u16,
+    cursor_y: u16,
+    cursor_visible: u8,
+    application_cursor: u8,
+    bracketed_paste: u8,
+    cells: *mut GrizVtCell,
+    cells_len: usize,
+    text: *mut u8,
+    text_len: usize,
+    _text_cap: usize,
+    title: *mut u8,
+    title_len: usize,
+}
+
+unsafe extern "C" {
+    fn griz_vt_new(cols: u16, rows: u16, out: *mut *mut GrizVt) -> c_int;
+    fn griz_vt_free(vt: *mut GrizVt);
+    fn griz_vt_write(vt: *mut GrizVt, data: *const u8, len: usize);
+    fn griz_vt_resize(vt: *mut GrizVt, cols: u16, rows: u16) -> c_int;
+    fn griz_vt_snapshot(vt: *mut GrizVt, out: *mut *mut GrizVtSnapshot) -> c_int;
+    fn griz_vt_snapshot_free(snapshot: *mut GrizVtSnapshot);
+    fn griz_vt_take_responses(vt: *mut GrizVt, data: *mut *mut u8, len: *mut usize);
+    fn griz_vt_bytes_free(data: *mut u8);
+}
+
+/// A libghostty-vt operation error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Error {
+    operation: &'static str,
+    code: c_int,
+}
+
+impl Error {
+    /// The libghostty-vt result code returned by the failed operation.
+    pub fn code(self) -> c_int {
+        self.code
+    }
+
+    /// The operation that failed.
+    pub fn operation(self) -> &'static str {
+        self.operation
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "libghostty-vt {} failed with result code {}",
+            self.operation, self.code
+        )
+    }
+}
+
+impl error::Error for Error {}
+
+/// A terminal emulator backed by libghostty-vt.
+///
+/// The terminal is intentionally not `Send` or `Sync`; use it from its owning
+/// actor thread.
+pub struct Terminal {
+    raw: NonNull<GrizVt>,
+    _single_threaded: PhantomData<Rc<()>>,
+}
+
+impl Terminal {
+    /// Creates a terminal with the given cell dimensions.
+    pub fn new(cols: u16, rows: u16) -> Result<Self, Error> {
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: `raw` is a valid out pointer. The C shim owns all Ghostty ABI
+        // interaction and returns either a live handle or an error.
+        check("create", unsafe { griz_vt_new(cols, rows, &mut raw) })?;
+        let raw = NonNull::new(raw).ok_or(Error {
+            operation: "create",
+            code: INVALID_VALUE,
+        })?;
+        Ok(Self {
+            raw,
+            _single_threaded: PhantomData,
+        })
+    }
+
+    /// Feeds arbitrary VT bytes into the terminal.
+    pub fn write(&mut self, bytes: &[u8]) {
+        // SAFETY: the terminal handle is live and `bytes` remains valid for the
+        // duration of this synchronous call.
+        unsafe { griz_vt_write(self.raw.as_ptr(), bytes.as_ptr(), bytes.len()) }
+    }
+
+    /// Resizes the terminal grid. Primary-screen wrapped content may reflow.
+    pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), Error> {
+        // SAFETY: the terminal handle is live and the scalar arguments have the
+        // exact types expected by the shim.
+        check("resize", unsafe {
+            griz_vt_resize(self.raw.as_ptr(), cols, rows)
+        })
+    }
+
+    /// Captures the current visible viewport through Ghostty's RenderState API.
+    pub fn screen(&mut self) -> Result<Screen, Error> {
+        let mut raw_snapshot = std::ptr::null_mut();
+        // SAFETY: the terminal handle and out pointer are valid.
+        check("render snapshot", unsafe {
+            griz_vt_snapshot(self.raw.as_ptr(), &mut raw_snapshot)
+        })?;
+        let raw_snapshot = NonNull::new(raw_snapshot).ok_or(Error {
+            operation: "render snapshot",
+            code: INVALID_VALUE,
+        })?;
+        let snapshot = Snapshot(raw_snapshot);
+        // SAFETY: Snapshot owns a live C allocation until this function exits.
+        unsafe { snapshot.to_screen() }
+    }
+
+    /// Returns and clears bytes generated in reply to terminal queries.
+    pub fn take_responses(&mut self) -> Vec<u8> {
+        let mut data = std::ptr::null_mut();
+        let mut len = 0;
+        // SAFETY: all pointers are valid for this synchronous ownership transfer.
+        unsafe { griz_vt_take_responses(self.raw.as_ptr(), &mut data, &mut len) };
+        let bytes = if len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: the shim returns `len` initialized bytes when len is nonzero.
+            unsafe { slice::from_raw_parts(data, len) }.to_vec()
+        };
+        // SAFETY: the pointer was allocated by the shim and may be null.
+        unsafe { griz_vt_bytes_free(data) };
+        bytes
+    }
+}
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        // SAFETY: this is the unique owned handle and it is freed exactly once.
+        unsafe { griz_vt_free(self.raw.as_ptr()) }
+    }
+}
+
+struct Snapshot(NonNull<GrizVtSnapshot>);
+
+impl Snapshot {
+    unsafe fn to_screen(&self) -> Result<Screen, Error> {
+        // SAFETY: guaranteed by the caller and the lifetime of `self`.
+        let snapshot = unsafe { self.0.as_ref() };
+        let expected_cells = usize::from(snapshot.cols) * usize::from(snapshot.rows);
+        if snapshot.cells_len != expected_cells
+            || (snapshot.cells_len != 0 && snapshot.cells.is_null())
+            || (snapshot.text_len != 0 && snapshot.text.is_null())
+            || (snapshot.title_len != 0 && snapshot.title.is_null())
+        {
+            return Err(Error {
+                operation: "decode render snapshot",
+                code: INVALID_VALUE,
+            });
+        }
+
+        let raw_cells = if snapshot.cells_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: validated above; the C snapshot owns this complete array.
+            unsafe { slice::from_raw_parts(snapshot.cells, snapshot.cells_len) }
+        };
+        let text = if snapshot.text_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: validated above; the C snapshot owns this complete buffer.
+            unsafe { slice::from_raw_parts(snapshot.text, snapshot.text_len) }
+        };
+        let title = if snapshot.title_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: validated above; the C snapshot owns this complete buffer.
+            unsafe { slice::from_raw_parts(snapshot.title, snapshot.title_len) }
+        };
+
+        let mut cells = Vec::with_capacity(usize::from(snapshot.rows));
+        for row in raw_cells.chunks_exact(usize::from(snapshot.cols)) {
+            let mut decoded_row = Vec::with_capacity(usize::from(snapshot.cols));
+            for cell in row {
+                let end = cell.text_offset.checked_add(cell.text_len).ok_or(Error {
+                    operation: "decode render snapshot",
+                    code: INVALID_VALUE,
+                })?;
+                let cell_text = text.get(cell.text_offset..end).ok_or(Error {
+                    operation: "decode render snapshot",
+                    code: INVALID_VALUE,
+                })?;
+                decoded_row.push(Cell {
+                    text: String::from_utf8_lossy(cell_text).into_owned(),
+                    width: cell.width,
+                    fg: cell.fg,
+                    bg: cell.bg,
+                    bold: cell.flags & CELL_BOLD != 0,
+                    italic: cell.flags & CELL_ITALIC != 0,
+                    underline: cell.flags & CELL_UNDERLINE != 0,
+                });
+            }
+            cells.push(decoded_row);
+        }
+
+        Ok(Screen {
+            cols: snapshot.cols,
+            rows: snapshot.rows,
+            cells,
+            cursor_x: snapshot.cursor_x,
+            cursor_y: snapshot.cursor_y,
+            cursor_visible: snapshot.cursor_visible != 0,
+            title: String::from_utf8_lossy(title).into_owned(),
+            application_cursor: snapshot.application_cursor != 0,
+            bracketed_paste: snapshot.bracketed_paste != 0,
+        })
+    }
+}
+
+impl Drop for Snapshot {
+    fn drop(&mut self) {
+        // SAFETY: this is the unique owned snapshot and it is freed exactly once.
+        unsafe { griz_vt_snapshot_free(self.0.as_ptr()) }
+    }
+}
+
+fn check(operation: &'static str, code: c_int) -> Result<(), Error> {
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(Error { operation, code })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ansi_styles_colors_cursor_and_crlf() {
+        let mut terminal = Terminal::new(8, 3).unwrap();
+        terminal.write(b"\x1b[1;3;4;7;38;2;1;2;3;48;2;4;5;6mA\x1b[0m\r\nB\x1b[3;4H");
+
+        let screen = terminal.screen().unwrap();
+        let styled = &screen.cells[0][0];
+        assert_eq!(styled.text, "A");
+        assert_eq!(styled.fg, [4, 5, 6]);
+        assert_eq!(styled.bg, [1, 2, 3]);
+        assert!(styled.bold);
+        assert!(styled.italic);
+        assert!(styled.underline);
+        assert_eq!(screen.cells[1][0].text, "B");
+        assert_eq!((screen.cursor_x, screen.cursor_y), (3, 2));
+        assert!(screen.cursor_visible);
+    }
+
+    #[test]
+    fn indexed_ansi_colors_are_resolved_to_rgb() {
+        let mut terminal = Terminal::new(4, 1).unwrap();
+        terminal.write(b"\x1b[31mA\x1b[38;5;1mB\x1b[0mC");
+
+        let screen = terminal.screen().unwrap();
+        assert_eq!(screen.cells[0][0].fg, screen.cells[0][1].fg);
+        assert_ne!(screen.cells[0][0].fg, screen.cells[0][2].fg);
+    }
+
+    #[test]
+    fn unicode_graphemes_and_wide_continuations() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        terminal.write("A界e\u{301}".as_bytes());
+
+        let screen = terminal.screen().unwrap();
+        assert_eq!(screen.cells[0][0].text, "A");
+        assert_eq!(screen.cells[0][0].width, 1);
+        assert_eq!(screen.cells[0][1].text, "界");
+        assert_eq!(screen.cells[0][1].width, 2);
+        assert_eq!(screen.cells[0][2].text, "");
+        assert_eq!(screen.cells[0][2].width, 0);
+        assert_eq!(screen.cells[0][3].text, "e\u{301}");
+    }
+
+    #[test]
+    fn resize_updates_dimensions_and_preserves_content() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        terminal.write(b"hello");
+        terminal.resize(3, 3).unwrap();
+
+        let screen = terminal.screen().unwrap();
+        assert_eq!((screen.cols, screen.rows), (3, 3));
+        assert_eq!(screen.cells.len(), 3);
+        assert!(
+            screen
+                .cells
+                .iter()
+                .flatten()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains("hello")
+        );
+    }
+
+    #[test]
+    fn alternate_screen_restores_primary_screen() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        terminal.write(b"primary");
+        terminal.write(b"\x1b[?1049h\x1b[Halt");
+        assert_eq!(terminal.screen().unwrap().cells[0][0].text, "a");
+
+        terminal.write(b"\x1b[?1049l");
+        let screen = terminal.screen().unwrap();
+        assert_eq!(screen.cells[0][0].text, "p");
+        assert_eq!(screen.cells[0][1].text, "r");
+    }
+
+    #[test]
+    fn title_modes_and_terminal_responses_are_exposed() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        terminal.write(b"\x1b]2;griz title\x07\x1b[?1h\x1b[?2004h\x1b[6n");
+
+        let screen = terminal.screen().unwrap();
+        assert_eq!(screen.title, "griz title");
+        assert!(screen.application_cursor);
+        assert!(screen.bracketed_paste);
+        assert_eq!(terminal.take_responses(), b"\x1b[1;1R");
+        assert!(terminal.take_responses().is_empty());
+    }
+}

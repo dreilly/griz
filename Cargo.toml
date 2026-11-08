@@ -1,0 +1,28 @@
+[package]
+name = "griz"
+version = "0.1.0"
+edition = "2024"
+publish = false
+default-run = "griz"
+
+[workspace]
+resolver = "3"
+members = ["crates/griz-protocol", "crates/griz-vt", "crates/griz-core"]
+default-members = [".", "crates/griz-core"]
+
+[dependencies]
+# Use the sibling checkout while Rune is pre-release. See README for the tested rev.
+rune = { path = "../rune/crates/rune" }
+griz-protocol = { path = "crates/griz-protocol" }
+libc = "0.2"
+serde_json = "1"
+
+[dev-dependencies]
+griz-vt = { path = "crates/griz-vt" }
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+codegen-units = 16
+incremental = true
