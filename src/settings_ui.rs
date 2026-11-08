@@ -49,7 +49,7 @@ fn appearance(state: &State, p: &Palette) -> El {
                 .fill(if state.settings.font == font {
                     p.accent.alpha(0.15)
                 } else {
-                    Color::TRANSPARENT
+                    p.button_fill()
                 })
                 .on_press(move |s: &mut State| {
                     s.settings.font = font;
@@ -64,7 +64,7 @@ fn appearance(state: &State, p: &Palette) -> El {
                 .fill(if state.settings.theme == theme {
                     p.accent.alpha(0.15)
                 } else {
-                    Color::TRANSPARENT
+                    p.button_fill()
                 })
                 .on_press(move |s: &mut State| {
                     s.settings.theme = theme;
@@ -252,7 +252,7 @@ fn shortcuts(state: &State, p: &Palette) -> El {
                             .fill(if recording {
                                 p.accent.alpha(0.18)
                             } else {
-                                p.ink.alpha(0.05)
+                                p.button_fill()
                             })
                             .on_press_tx(move |s: &mut State, tx| {
                                 s.recording = Some(action);
@@ -313,7 +313,7 @@ pub fn panel(state: &State, p: &Palette) -> Option<El> {
                 .fill(if state.settings_page == page {
                     p.accent.alpha(0.12)
                 } else {
-                    Color::TRANSPARENT
+                    p.button_fill()
                 })
                 .on_press_tx(move |s: &mut State, tx| {
                     s.settings_page = page;

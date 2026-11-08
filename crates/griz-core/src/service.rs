@@ -60,6 +60,7 @@ impl TerminalRecord {
             id: self.id,
             label: self.label.clone(),
             initial_cwd: self.initial_cwd.to_string_lossy().into_owned(),
+            directory: directory_path(&self.current_cwd),
             shell_pid: self.session.pid,
             exited: self.exited.clone(),
         }

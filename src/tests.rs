@@ -1,3 +1,7 @@
+#[path = "tests/buttons.rs"]
+mod buttons;
+#[path = "tests/command_palette.rs"]
+mod command_palette_tests;
 #[path = "tests/font_and_close.rs"]
 mod font_and_close;
 #[path = "tests/settings.rs"]
@@ -18,6 +22,7 @@ fn snapshot() -> ViewState {
         id,
         label: format!("Terminal {id}"),
         initial_cwd: "/tmp".into(),
+        directory: "/tmp".into(),
         shell_pid: id as u32 + 100,
         exited: None,
     };

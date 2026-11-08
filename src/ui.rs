@@ -21,6 +21,10 @@ impl Palette {
     pub fn control_height(&self) -> f32 {
         28.0_f32.max(self.label.line_px() + 10.0)
     }
+
+    pub fn button_fill(&self) -> Color {
+        self.ink.alpha(0.08)
+    }
 }
 
 fn palette(settings: &crate::settings::Settings) -> Palette {
@@ -40,20 +44,30 @@ fn palette(settings: &crate::settings::Settings) -> Palette {
     }
 }
 
+/// Regular actions use the same Soft surface as the button-style sample.
 pub(crate) fn button(key: impl Into<String>, label: &str, p: &Palette) -> El {
-    row()
-        .key(key)
-        .role("button")
-        .label(label)
-        .focusable(true)
-        .h(p.control_height())
-        .px(10.0)
-        .center_y()
-        .radius(5.0)
-        .hover(p.ink.alpha(0.08))
-        .press(p.ink.alpha(0.12))
-        .focus_ring(2.0, 2.0, p.accent)
-        .child(text(label).font(p.label).color(p.ink))
+    styled_button(key, label, p, crate::settings::WorkspaceButtonStyle::Soft)
+}
+
+fn styled_button(
+    key: impl Into<String>,
+    label: &str,
+    p: &Palette,
+    style: crate::settings::WorkspaceButtonStyle,
+) -> El {
+    button_surface(
+        row()
+            .key(key)
+            .role("button")
+            .label(label)
+            .focusable(true)
+            .h(p.control_height())
+            .px(10.0)
+            .center_y()
+            .child(text(label).font(p.label).color(button_ink(style, p))),
+        style,
+        p,
+    )
 }
 
 pub fn view(state: &State, cx: &mut Cx<State>) -> El {
@@ -201,15 +215,20 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                         Color::TRANSPARENT
                     })
                     .child(
-                        button(format!("tab-{id}"), &label, &p)
-                            .label(format!("Select terminal {number}"))
-                            .focus_ring(2.0, 2.0, workspace_accent)
-                            .grow(1.0)
-                            .disabled(!state.ready())
-                            .on_press_tx(move |s: &mut State, tx| {
-                                s.change(Command::SelectTerminal { terminal_id: id });
-                                tx.blur();
-                            }),
+                        styled_button(
+                            format!("tab-{id}"),
+                            &label,
+                            &p,
+                            crate::settings::WorkspaceButtonStyle::Ghost,
+                        )
+                        .label(format!("Select terminal {number}"))
+                        .focus_ring(2.0, 2.0, workspace_accent)
+                        .grow(1.0)
+                        .disabled(!state.ready())
+                        .on_press_tx(move |s: &mut State, tx| {
+                            s.change(Command::SelectTerminal { terminal_id: id });
+                            tx.blur();
+                        }),
                     )
                     .child(
                         row()
@@ -382,6 +401,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .on_paste(|s: &mut State, text, tx| {
             if !s.settings_open
                 && s.dialog.is_none()
+                && !s.palette.is_open()
                 && tx.focused().is_none_or(|key| key == "terminal")
             {
                 let bracketed = s.screen().is_some_and(|screen| screen.bracketed_paste);
@@ -399,6 +419,72 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         )
         .children(dialog(state, &p, cx))
         .children(crate::settings_ui::panel(state, &p))
+        .children(crate::command_palette::panel(state, &p, cx))
+}
+
+fn button_ink(style: crate::settings::WorkspaceButtonStyle, p: &Palette) -> Color {
+    if style == crate::settings::WorkspaceButtonStyle::Solid {
+        p.bg
+    } else {
+        p.ink
+    }
+}
+
+/// Theme-relative colors keep Soft neutral on both charcoal and midnight surfaces.
+/// Regular controls, the empty-state action, and gallery samples share every interaction state.
+fn button_surface(element: El, style: crate::settings::WorkspaceButtonStyle, p: &Palette) -> El {
+    use crate::settings::WorkspaceButtonStyle;
+    let (fill, border, hover, press, radius) = match style {
+        WorkspaceButtonStyle::Soft => (
+            p.button_fill(),
+            p.button_fill(),
+            p.ink.alpha(0.12),
+            p.ink.alpha(0.18),
+            6.0,
+        ),
+        WorkspaceButtonStyle::Outline => (
+            Color::TRANSPARENT,
+            p.ink.alpha(0.35),
+            p.ink.alpha(0.05),
+            p.ink.alpha(0.10),
+            6.0,
+        ),
+        WorkspaceButtonStyle::Solid => (
+            p.ink,
+            Color::TRANSPARENT,
+            p.ink.alpha(0.90),
+            p.ink.alpha(0.75),
+            6.0,
+        ),
+        WorkspaceButtonStyle::Ghost => (
+            Color::TRANSPARENT,
+            Color::TRANSPARENT,
+            p.ink.alpha(0.06),
+            p.ink.alpha(0.12),
+            6.0,
+        ),
+        WorkspaceButtonStyle::Pill => (
+            p.ink.alpha(0.08),
+            p.ink.alpha(0.18),
+            p.ink.alpha(0.12),
+            p.ink.alpha(0.18),
+            999.0,
+        ),
+        WorkspaceButtonStyle::Accent => (
+            p.accent.alpha(0.12),
+            p.accent.alpha(0.25),
+            p.accent.alpha(0.18),
+            p.accent.alpha(0.24),
+            6.0,
+        ),
+    };
+    element
+        .radius(radius)
+        .fill(fill)
+        .border(1.0, border)
+        .hover(hover)
+        .press(press)
+        .focus_ring(2.0, 2.0, p.ink.alpha(0.65))
 }
 
 /// Shared by the real action and Settings samples so previews stay exact.
@@ -408,78 +494,25 @@ pub(crate) fn workspace_button(
     p: &Palette,
     label_key: impl Into<String>,
 ) -> El {
-    use crate::settings::WorkspaceButtonStyle;
-    let (fill, border, hover, press, ink, radius) = match style {
-        WorkspaceButtonStyle::Soft => (
-            p.ink.alpha(0.08),
-            p.ink.alpha(0.08),
-            p.ink.alpha(0.12),
-            p.ink.alpha(0.18),
-            p.ink,
-            6.0,
-        ),
-        WorkspaceButtonStyle::Outline => (
-            Color::TRANSPARENT,
-            p.ink.alpha(0.35),
-            p.ink.alpha(0.05),
-            p.ink.alpha(0.10),
-            p.ink,
-            6.0,
-        ),
-        WorkspaceButtonStyle::Solid => (
-            p.ink,
-            Color::TRANSPARENT,
-            p.ink.alpha(0.90),
-            p.ink.alpha(0.75),
-            p.bg,
-            6.0,
-        ),
-        WorkspaceButtonStyle::Ghost => (
-            Color::TRANSPARENT,
-            Color::TRANSPARENT,
-            p.ink.alpha(0.06),
-            p.ink.alpha(0.12),
-            p.ink,
-            6.0,
-        ),
-        WorkspaceButtonStyle::Pill => (
-            p.ink.alpha(0.08),
-            p.ink.alpha(0.18),
-            p.ink.alpha(0.12),
-            p.ink.alpha(0.18),
-            p.ink,
-            999.0,
-        ),
-        WorkspaceButtonStyle::Accent => (
-            p.accent.alpha(0.12),
-            p.accent.alpha(0.25),
-            p.accent.alpha(0.18),
-            p.accent.alpha(0.24),
-            p.ink,
-            6.0,
-        ),
-    };
-    col()
-        .key(key)
-        .role("button")
-        .label("Create a workspace to get started")
-        .focusable(true)
-        .padding(12.0)
-        .px(16.0)
-        .center()
-        .radius(radius)
-        .fill(fill)
-        .border(1.0, border)
-        .hover(hover)
-        .press(press)
-        .focus_ring(2.0, 2.0, p.ink.alpha(0.65))
-        .child(
-            text("Create a workspace to get started")
-                .key(label_key)
-                .font(p.label)
-                .color(ink)
-                .wrap(),
-        )
+    button_surface(
+        col()
+            .key(key)
+            .role("button")
+            .label("Create a workspace to get started")
+            .focusable(true)
+            .padding(12.0)
+            .px(16.0)
+            .center()
+            .child(
+                text("Create a workspace to get started")
+                    .key(label_key)
+                    .font(p.label)
+                    .color(button_ink(style, p))
+                    .wrap(),
+            ),
+        style,
+        p,
+    )
 }
 
 fn empty_workspaces(state: &State, p: &Palette, cx: &Cx<State>) -> El {
@@ -622,7 +655,6 @@ fn dialog(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
                             .child(
                                 button("dialog-submit", submit, p)
                                     .disabled(!valid || !state.ready())
-                                    .fill(p.accent.alpha(0.15))
                                     .on_press_tx(|s: &mut State, tx| s.submit_dialog(tx)),
                             ),
                     ),

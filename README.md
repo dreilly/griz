@@ -150,7 +150,11 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   the app, including Settings and text fields (**⌘=** also increases size).
   Themes change the interface
   and terminal base background; applications' explicit ANSI colors are preserved.
-- **Buttons:** preview the empty-state workspace button in Soft, Outline, Solid,
+- **Buttons:** regular action buttons throughout the app use **Soft**: a subtle
+  neutral fill and border, rounded corners, and consistent hover, press, and keyboard
+  focus states. The same theme-relative styling applies in Dark and Midnight; selected
+  settings and workspace/tab navigation retain their selection highlights. You can
+  preview the empty-state workspace button in Soft, Outline, Solid,
   Ghost, Pill, or Accent styles. Click a sample to select and save it without creating
   a workspace. Soft is the neutral default; only Accent uses the green tint.
   Samples include the real hover/press/focus behavior and match the actual button.
@@ -158,14 +162,42 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   Conflicts are rejected; **Clear** disables a binding and **Reset** restores its
   default. Escape cancels recording before dismissing Settings. Shortcuts require
   Command, Control, or Option; Settings and native editing/system shortcuts are reserved.
-  Font sizing and closing the active terminal are app-wide commands; other actions
-  only run with terminal focus. Closing is suppressed while a modal is open.
+  Font sizing, closing the active terminal, and opening either palette are app-wide
+  commands; other shortcuts only run with terminal focus. Closing is suppressed
+  while a modal is open.
 - Defaults: **⌘T** opens a terminal using the service default directory,
   **⌘W** confirms closing the **active terminal**, **⇧⌘N** opens New Workspace,
   **⌘B** toggles the sidebar, and **⇧⌘→ / ⇧⌘←** cycle through tabs.
   Closing targets a captured terminal ID, not a tab or window. When split panes are
   added, this action will target the focused terminal within the tab.
   The Settings shortcut **⌘,** stays fixed so Settings is always reachable.
+
+### Quick navigation and command palette
+
+- **⌘P** opens **Jump To** across every workspace and terminal tab. Search workspace
+  names, terminal numbers, and each terminal’s **current** shell directory, including
+  inactive tabs. Terminal rows use their own directory, not the workspace’s selected
+  tab’s automatic name or the terminal’s starting directory. Directory changes update
+  live, and exited shells keep their last known path. Matches are case-insensitive and allow abbreviations and multiple search words.
+  Workspace results restore that workspace’s remembered tab; terminal results select
+  that exact terminal, including when it belongs to another workspace.
+- **⇧⌘P** opens **Commands**: create a workspace here (using the selected shell’s
+  current directory), open terminals, choose a terminal starting directory, rename
+  or close the current workspace, close the active terminal, cycle tabs, toggle the
+  sidebar, adjust font size, and open Settings. Reconnect is available while
+  disconnected; Start new shell appears for an exited shell. Destructive commands
+  still use their existing confirmation dialogs.
+- In both modes, type to filter, use **Ctrl-N / Ctrl-P** or **↓ / ↑** to cycle
+  through results (wrapping at either end), and **Enter** to select. **Escape** or
+  a click outside dismisses without running anything. Typing, paste, and search
+  navigation never go to the shell while the palette is open.
+- Opening the other mode resets the query. Both opener shortcuts can be changed or
+  disabled in Settings → Shortcuts. On non-macOS platforms the primary modifier is
+  Control instead of Command. Within an open palette, Ctrl-P navigates results.
+- Session actions are disabled while disconnected or waiting for a selection
+  acknowledgement, but Settings and local appearance commands remain available.
+  Split panes are not implemented yet, so navigation currently targets workspaces
+  and terminal tabs, not separate panes.
 
 Preferences save automatically through Rune's atomic JSON store. On macOS the file
 is `~/Library/Application Support/griz/prefs.json`; on Linux it is

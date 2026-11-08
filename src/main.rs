@@ -1,5 +1,6 @@
 //! Native Rune client. Workspaces, PTYs and terminal emulators live in griz-core.
 mod client;
+mod command_palette;
 mod input;
 mod settings;
 mod settings_ui;
@@ -47,6 +48,7 @@ struct State {
     recording: Option<Action>,
     settings_error: Option<String>,
     shortcut_search: TextEdit,
+    palette: command_palette::PaletteState,
     viewport_size: Option<(f32, f32)>,
 }
 
@@ -74,6 +76,7 @@ impl Default for State {
             recording: None,
             settings_error: None,
             shortcut_search: TextEdit::new(""),
+            palette: command_palette::PaletteState::default(),
             viewport_size: None,
         }
     }
@@ -81,6 +84,7 @@ impl Default for State {
 
 impl State {
     fn open_settings(&mut self, tx: &mut Tx) {
+        self.palette.close();
         self.dialog = None;
         self.preedit.clear();
         self.recording = None;
@@ -125,10 +129,14 @@ impl State {
 
     fn act(&mut self, action: Action, tx: &mut Tx) {
         let font_action = matches!(action, Action::IncreaseFontSize | Action::DecreaseFontSize);
-        if !font_action && (self.settings_open || self.dialog.is_some()) {
+        if !font_action && (self.settings_open || self.dialog.is_some() || self.palette.is_open()) {
             return;
         }
         match action {
+            Action::QuickOpen | Action::CommandPalette => {
+                command_palette::open(self, action, tx);
+                return;
+            }
             Action::IncreaseFontSize => self.change_font_size(1.0),
             Action::DecreaseFontSize => self.change_font_size(-1.0),
             Action::ToggleSidebar => self.sidebar_open = !self.sidebar_open,
@@ -263,7 +271,12 @@ impl State {
 
     fn input(&mut self, bytes: Vec<u8>) {
         // A click may race a previously queued screen. Never type into the old tab.
-        if self.settings_open || self.dialog.is_some() || self.pending.is_some() || self.offline {
+        if self.settings_open
+            || self.dialog.is_some()
+            || self.palette.is_open()
+            || self.pending.is_some()
+            || self.offline
+        {
             return;
         }
         if !self.online {
@@ -362,6 +375,7 @@ impl State {
             // Other dialogs start blank; the core resolves their directory defaults.
             _ => "",
         };
+        self.palette.close();
         self.draft = TextEdit::new(value);
         self.draft.focused = !matches!(
             dialog,
@@ -446,6 +460,17 @@ fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         }
         return true;
     }
+    if state.palette.is_open() && command_palette::key(state, event, tx) {
+        return true;
+    }
+    for action in [Action::QuickOpen, Action::CommandPalette] {
+        if state.settings.matches(action, event, tx) {
+            if !tx.key_repeat() && !state.settings_open && state.dialog.is_none() {
+                command_palette::open(state, action, tx);
+            }
+            return true;
+        }
+    }
     // App-wide commands also work in Settings and text fields. Consuming Close while
     // a modal is open prevents AppKit's standard Cmd-W fallback from closing the window.
     for action in [
@@ -460,7 +485,7 @@ fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
             return true;
         }
     }
-    if state.settings_open || state.dialog.is_some() {
+    if state.settings_open || state.dialog.is_some() || state.palette.is_open() {
         return false;
     }
     if tx.focused().is_none_or(|key| key == "terminal") {
@@ -480,7 +505,7 @@ fn terminal_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if app_shortcut(state, event, tx) {
         return true;
     }
-    if state.settings_open || state.dialog.is_some() {
+    if state.settings_open || state.dialog.is_some() || state.palette.is_open() {
         return false;
     }
     let application_cursor = state.screen().is_some_and(|s| s.application_cursor);
@@ -503,6 +528,7 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
 fn on_ime(state: &mut State, event: &Ime, tx: &mut Tx) -> bool {
     if state.settings_open
         || state.dialog.is_some()
+        || state.palette.is_open()
         || tx.focused().is_some_and(|key| key != "terminal")
     {
         return false;

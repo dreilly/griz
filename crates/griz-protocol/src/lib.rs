@@ -44,6 +44,9 @@ pub struct TerminalInfo {
     pub label: String,
     /// Starting directory, not a claim about the shell's current working directory.
     pub initial_cwd: String,
+    /// This terminal's live shell directory, abbreviating HOME with ~.
+    /// Retains its last known value after shell exit, independently of client selection.
+    pub directory: String,
     pub shell_pid: u32,
     pub exited: Option<String>,
 }

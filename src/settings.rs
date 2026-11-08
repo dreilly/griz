@@ -103,10 +103,12 @@ pub enum Action {
     PreviousTab,
     IncreaseFontSize,
     DecreaseFontSize,
+    QuickOpen,
+    CommandPalette,
 }
 
 impl Action {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::NewTerminal,
         Self::CloseTerminal,
         Self::NewWorkspace,
@@ -115,6 +117,8 @@ impl Action {
         Self::PreviousTab,
         Self::IncreaseFontSize,
         Self::DecreaseFontSize,
+        Self::QuickOpen,
+        Self::CommandPalette,
     ];
 
     pub fn id(self) -> &'static str {
@@ -127,6 +131,8 @@ impl Action {
             Self::PreviousTab => "tab.previous",
             Self::IncreaseFontSize => "font.increase",
             Self::DecreaseFontSize => "font.decrease",
+            Self::QuickOpen => "palette.navigate",
+            Self::CommandPalette => "palette.commands",
         }
     }
 
@@ -140,6 +146,8 @@ impl Action {
             Self::PreviousTab => "Previous tab",
             Self::IncreaseFontSize => "Increase app font size",
             Self::DecreaseFontSize => "Decrease app font size",
+            Self::QuickOpen => "Jump to workspace or terminal…",
+            Self::CommandPalette => "Command palette…",
         }
     }
 
@@ -153,6 +161,8 @@ impl Action {
             Self::PreviousTab => "mod+shift+left",
             Self::IncreaseFontSize => "mod+plus",
             Self::DecreaseFontSize => "mod+minus",
+            Self::QuickOpen => "mod+p",
+            Self::CommandPalette => "mod+shift+p",
         })
         .expect("built-in shortcut")
     }
