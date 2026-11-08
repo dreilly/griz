@@ -1,7 +1,7 @@
 //! Workspace navigation and one-terminal-per-tab presentation. No session ownership here.
 use crate::{Command, Dialog, State, TITLEBAR_HEIGHT, terminal_view};
 use rune::tok::type_;
-use rune::{Color, Cx, El, TextStyle, col, el, oklch, row, text, text_input};
+use rune::{Color, Cx, El, PopupItem, PopupMenu, TextStyle, col, el, oklch, row, text, text_input};
 
 pub(crate) struct Palette {
     pub bg: Color,
@@ -90,11 +90,6 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         for workspace in &snapshot.workspaces {
             let id = workspace.id;
             let active = snapshot.active_workspace == id;
-            let running = workspace
-                .terminals
-                .iter()
-                .filter(|t| t.exited.is_none())
-                .count();
             workspaces = workspaces.child(
                 col()
                     .key(format!("workspace-{id}"))
@@ -104,7 +99,6 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     .disabled(!state.ready())
                     .w_full()
                     .padding(12.0)
-                    .gap(5.0)
                     .radius(6.0)
                     .fill(if active {
                         p.accent.alpha(0.12)
@@ -117,19 +111,33 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                         s.change(Command::SelectWorkspace { workspace_id: id });
                         tx.blur();
                     })
+                    .on_secondary_press(move |s: &mut State, press, tx| {
+                        if !s.ready() || s.settings_open || s.dialog.is_some() {
+                            return;
+                        }
+                        let menu = PopupMenu::new()
+                            .item(PopupItem::new("rename", "Rename workspace…"))
+                            .separator()
+                            .item(PopupItem::new("close", "Close workspace…"));
+                        tx.popup_menu(menu, press, move |s: &mut State, picked, tx| {
+                            let Some(workspace) = s.snapshot.as_ref().and_then(|snapshot| {
+                                snapshot.workspaces.iter().find(|w| w.id == id)
+                            }) else {
+                                return;
+                            };
+                            let dialog = match picked {
+                                Some("rename") => Dialog::RenameWorkspace(id),
+                                Some("close") => Dialog::CloseWorkspace(id, workspace.name.clone()),
+                                _ => return,
+                            };
+                            s.open_dialog(dialog, tx);
+                        });
+                    })
                     .child(
                         text(workspace.name.clone())
                             .font(p.label)
                             .color(if active { p.accent } else { p.ink })
                             .truncate(),
-                    )
-                    .child(
-                        text(format!(
-                            "{} tabs · {running} running",
-                            workspace.terminals.len()
-                        ))
-                        .font(p.label)
-                        .color(p.muted),
                     ),
             );
         }
@@ -159,15 +167,6 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     ),
             )
             .child(workspaces)
-            .child(
-                button("rename-workspace", "Rename workspace", &p)
-                    .disabled(!state.ready() || state.workspace().is_none())
-                    .on_press_tx(|s: &mut State, tx| {
-                        if let Some(w) = s.workspace() {
-                            s.open_dialog(Dialog::RenameWorkspace(w.id), tx);
-                        }
-                    }),
-            )
             .child(
                 text("Switching or closing this window leaves your terminals running.")
                     .font(p.label)
@@ -312,67 +311,75 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 )
                 .child(terminal_view::viewport(state)),
         );
-    let terminal = col()
-        .key("terminal-pane")
-        .grow(1.0)
-        .min_w(0.0)
-        .h_full()
-        .child(
-            row()
-                .h(38.0_f32.max(p.control_height() + 10.0))
-                .w_full()
-                .px(12.0)
-                .gap(8.0)
-                .center_y()
-                .child(tabs)
-                .child(
-                    button("new-terminal", "+ Terminal", &p)
-                        .disabled(!state.ready() || state.workspace().is_none())
-                        .on_press_tx(|s: &mut State, tx| {
-                            if let Some(w) = s.workspace() {
-                                s.open_dialog(Dialog::NewTerminal(w.id), tx);
-                            }
-                        }),
-                ),
-        )
-        .child(
-            col()
-                .key("terminal-stage")
-                .w_full()
-                .grow(1.0)
-                .min_h(0.0)
-                .min_w(0.0)
-                .padding(10.0)
-                .child(terminal_card),
-        )
-        .child(
-            row()
-                .key("terminal-status")
-                .h(30.0_f32.max(p.label.line_px() + 10.0))
-                .w_full()
-                .px(12.0)
-                .center_y()
-                .border_sides([1.0, 0.0, 0.0, 0.0], p.line)
-                .child(
-                    text(
-                        state
-                            .notice
-                            .as_deref()
-                            .unwrap_or(if state.pending.is_some() {
-                                "Updating selection…"
-                            } else {
-                                &state.status
+    let terminal = if state
+        .snapshot
+        .as_ref()
+        .is_some_and(|s| s.workspaces.is_empty())
+    {
+        empty_workspaces(state, &p, cx)
+    } else {
+        col()
+            .key("terminal-pane")
+            .grow(1.0)
+            .min_w(0.0)
+            .h_full()
+            .child(
+                row()
+                    .h(38.0_f32.max(p.control_height() + 10.0))
+                    .w_full()
+                    .px(12.0)
+                    .gap(8.0)
+                    .center_y()
+                    .child(tabs)
+                    .child(
+                        button("new-terminal", "+ Terminal", &p)
+                            .disabled(!state.ready() || state.workspace().is_none())
+                            .on_press_tx(|s: &mut State, tx| {
+                                if let Some(w) = s.workspace() {
+                                    s.open_dialog(Dialog::NewTerminal(w.id), tx);
+                                }
                             }),
-                    )
-                    .font(p.label)
-                    .color(if state.notice.is_some() {
-                        p.accent
-                    } else {
-                        p.muted
-                    })
-                    .truncate(),
-                ),
-        );
+                    ),
+            )
+            .child(
+                col()
+                    .key("terminal-stage")
+                    .w_full()
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .min_w(0.0)
+                    .padding(10.0)
+                    .child(terminal_card),
+            )
+            .child(
+                row()
+                    .key("terminal-status")
+                    .h(30.0_f32.max(p.label.line_px() + 10.0))
+                    .w_full()
+                    .px(12.0)
+                    .center_y()
+                    .border_sides([1.0, 0.0, 0.0, 0.0], p.line)
+                    .child(
+                        text(
+                            state
+                                .notice
+                                .as_deref()
+                                .unwrap_or(if state.pending.is_some() {
+                                    "Updating selection…"
+                                } else {
+                                    &state.status
+                                }),
+                        )
+                        .font(p.label)
+                        .color(if state.notice.is_some() {
+                            p.accent
+                        } else {
+                            p.muted
+                        })
+                        .truncate(),
+                    ),
+            )
+    };
 
     col()
         .key("root")
@@ -401,20 +408,119 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .children(crate::settings_ui::panel(state, &p))
 }
 
+const EMPTY_WORKSPACE_ART: &str = include_str!("empty_workspace.txt");
+
+fn empty_workspaces(state: &State, p: &Palette, cx: &Cx<State>) -> El {
+    // Small, fixed-size characters make this an illustration, not UI typography.
+    // Only shrink it to fit smaller panes; never apply the user's font settings.
+    let [width, height] = cx.layout_size("empty-workspaces").unwrap_or([800.0, 600.0]);
+    let base = TextStyle::new(12.0, 400.0)
+        .family(rune::Family::SystemMono)
+        .lh(11.0)
+        .features("'liga' 0, 'calt' 0");
+    let art_width = EMPTY_WORKSPACE_ART
+        .lines()
+        .map(|line| rune::text::advance(line, base))
+        .fold(0.0_f32, f32::max);
+    let art_height = EMPTY_WORKSPACE_ART.lines().count() as f32 * base.line_px();
+    let cursor_height = 8.0;
+    let cursor_width = art_height * 0.36;
+    let prompt_gap = 32.0;
+    let available_width = (width - 48.0).max(1.0);
+    // A fixed caption allowance keeps the artwork independent of UI font size,
+    // while leaving room for the normally scaling caption to wrap when needed.
+    let available_height = (height - 192.0).max(1.0);
+    let scale = (available_width / (art_width + prompt_gap + cursor_width))
+        .min(available_height / art_height)
+        .min(1.0);
+    col()
+        .key("empty-workspaces")
+        .role("region")
+        .label("No workspaces")
+        .grow(1.0)
+        .min_w(0.0)
+        .h_full()
+        .padding(24.0)
+        .center()
+        .gap(24.0)
+        .child(
+            row()
+                .key("empty-workspaces-icon")
+                .h(art_height * scale)
+                .gap(prompt_gap * scale)
+                .center_y()
+                .inert()
+                .child(
+                    text(EMPTY_WORKSPACE_ART.trim_end())
+                        .key("empty-workspaces-symbol")
+                        .font(TextStyle {
+                            size: base.size * scale,
+                            line_height: base.line_px() * scale,
+                            ..base
+                        })
+                        .color(p.muted.alpha(0.45)),
+                )
+                .child(
+                    el().key("empty-workspaces-cursor")
+                        .size(cursor_width * scale, cursor_height * scale)
+                        .self_end()
+                        .fill(p.muted.alpha(0.45))
+                        .cycle(rune::Cycle {
+                            period: 1.6,
+                            phase: 0.0,
+                            stops: &[(0.0, 1.0), (0.5, 0.2), (1.0, 1.0)],
+                            still: 1.0,
+                            fps: 30.0,
+                        }),
+                ),
+        )
+        .child(
+            col()
+                .key("empty-workspaces-create")
+                .role("button")
+                .label("Create a workspace to get started")
+                .focusable(true)
+                .disabled(!state.ready())
+                .max_w(available_width)
+                .padding(12.0)
+                .px(16.0)
+                .center()
+                .radius(6.0)
+                .fill(p.accent.alpha(0.12))
+                .border(1.0, p.accent.alpha(0.25))
+                .hover(p.accent.alpha(0.18))
+                .press(p.accent.alpha(0.24))
+                .focus_ring(2.0, 2.0, p.accent)
+                .on_press_tx(|s: &mut State, tx| {
+                    s.change(Command::CreateWorkspace {
+                        name: String::new(),
+                    });
+                    tx.blur();
+                })
+                .child(
+                    text("Create a workspace to get started")
+                        .key("empty-workspaces-message")
+                        .font(p.label)
+                        .color(p.ink)
+                        .wrap(),
+                ),
+        )
+}
+
 fn dialog(state: &State, p: &Palette) -> Option<El> {
     let dialog = state.dialog.as_ref()?;
     let (title, hint, submit, placeholder) = match dialog {
         Dialog::NewWorkspace => (
             "New workspace",
-            "A named collection of terminals, not a project directory.".to_owned(),
+            "Name is optional. Leave it blank to use the current terminal directory (e.g. ~/code). The new workspace starts there.".to_owned(),
             "Create workspace",
-            "e.g. Daily",
+            "Optional name",
         ),
         Dialog::RenameWorkspace(_) => (
             "Rename workspace",
-            "This changes the name, not the terminals or their directories.".to_owned(),
+            "Leave blank to use this workspace’s selected terminal directory (e.g. ~/code). Renaming does not move its terminals.".to_owned(),
             "Rename",
-            "Workspace name",
+            "Optional name",
         ),
         Dialog::NewTerminal(_) => (
             "New terminal",
@@ -429,22 +535,34 @@ fn dialog(state: &State, p: &Palette) -> Option<El> {
             "Open terminal",
             "/Users/you/code/anything",
         ),
+        Dialog::CloseWorkspace(_, name) => (
+            "Close workspace?",
+            format!(
+                "Close “{name}” and end all of its terminals, shells, and foreground jobs? This removes the workspace for every connected window."
+            ),
+            "Close workspace",
+            "",
+        ),
         Dialog::CloseTerminal(_, label) => (
             "Close terminal?",
             format!(
-                "Close {label} and end its shell and foreground job? This is different from switching tabs or closing the window."
+                "Close {label} and end its shell and foreground job? Closing the final tab also closes its workspace for every connected window. Switching tabs or closing the window leaves terminals running."
             ),
             "Close terminal",
             "",
         ),
     };
-    let input = (!matches!(dialog, Dialog::CloseTerminal(..))).then(|| {
+    let input = (!matches!(
+        dialog,
+        Dialog::CloseTerminal(..) | Dialog::CloseWorkspace(..)
+    ))
+    .then(|| {
         text_input(&state.draft, p.input)
             .key("dialog-input")
             .label(if matches!(dialog, Dialog::NewTerminal(_)) {
                 "Starting directory"
             } else {
-                "Workspace name"
+                "Workspace name (optional)"
             })
             .single_line()
             .w_full()
@@ -459,7 +577,7 @@ fn dialog(state: &State, p: &Palette) -> Option<El> {
     let valid = match dialog {
         Dialog::NewWorkspace | Dialog::RenameWorkspace(_) => {
             let name = state.draft.text.trim();
-            !name.is_empty() && name.chars().count() <= 80 && !name.chars().any(char::is_control)
+            name.chars().count() <= 80 && !name.chars().any(char::is_control)
         }
         _ => true,
     };

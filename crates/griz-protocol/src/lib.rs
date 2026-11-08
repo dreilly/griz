@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 256 * 1024;
 pub const MAX_COLS: u16 = 300;
@@ -71,6 +71,7 @@ pub struct ViewState {
     /// Highest command serial processed on this connection, including rejected commands.
     pub ack: u64,
     pub workspaces: Vec<WorkspaceInfo>,
+    /// Zero when no workspaces remain; workspace IDs are always nonzero.
     pub active_workspace: WorkspaceId,
     pub active_terminal: Option<TerminalId>,
     pub terminal: Option<TerminalFrame>,
@@ -88,12 +89,19 @@ pub enum Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
+    /// Blank names use the selected shell's current directory as the name.
+    /// The first terminal inherits that directory, or the service default if none is selected.
     CreateWorkspace {
         name: String,
     },
+    /// Blank names use the directory of the selected terminal in this workspace.
     RenameWorkspace {
         workspace_id: WorkspaceId,
         name: String,
+    },
+    /// Remove the workspace and end all of its terminals and running processes.
+    CloseWorkspace {
+        workspace_id: WorkspaceId,
     },
     SelectWorkspace {
         workspace_id: WorkspaceId,
@@ -107,6 +115,7 @@ pub enum Command {
         terminal_id: TerminalId,
     },
     /// Explicitly end this terminal, including its running process.
+    /// Closing the final terminal also removes its workspace.
     CloseTerminal {
         terminal_id: TerminalId,
     },

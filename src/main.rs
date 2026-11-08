@@ -17,6 +17,7 @@ const TITLEBAR_HEIGHT: f32 = 44.0;
 enum Dialog {
     NewWorkspace,
     RenameWorkspace(WorkspaceId),
+    CloseWorkspace(WorkspaceId, String),
     NewTerminal(WorkspaceId),
     CloseTerminal(TerminalId, String),
 }
@@ -301,6 +302,9 @@ impl State {
                     snapshot.core_pid, t.shell_pid, t.screen.cols, t.screen.rows
                 ),
             },
+            None if snapshot.workspaces.is_empty() => {
+                "No workspaces. Create a workspace with + in the sidebar to get started.".into()
+            }
             None => "No terminals in this workspace. Open a terminal to get started.".into(),
         };
         self.snapshot = Some(snapshot);
@@ -349,7 +353,10 @@ impl State {
             _ => "",
         };
         self.draft = TextEdit::new(value);
-        self.draft.focused = !matches!(dialog, Dialog::CloseTerminal(..));
+        self.draft.focused = !matches!(
+            dialog,
+            Dialog::CloseTerminal(..) | Dialog::CloseWorkspace(..)
+        );
         self.dialog = Some(dialog);
         tx.blur();
     }
@@ -369,6 +376,9 @@ impl State {
                 workspace_id,
                 cwd: (!value.is_empty()).then_some(value),
             },
+            Some(Dialog::CloseWorkspace(workspace_id, _)) => {
+                Command::CloseWorkspace { workspace_id }
+            }
             Some(Dialog::CloseTerminal(terminal_id, _)) => Command::CloseTerminal { terminal_id },
             None => return,
         };

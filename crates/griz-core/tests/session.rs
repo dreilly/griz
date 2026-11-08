@@ -11,6 +11,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[path = "session/naming.rs"]
+mod naming;
+#[path = "session/workspaces.rs"]
+mod workspaces;
+
 static NEXT_SERVICE: AtomicUsize = AtomicUsize::new(0);
 
 struct Service {
@@ -333,7 +338,7 @@ fn resize_applies_to_selected_terminal_and_observer_does_not_resize() {
 }
 
 #[test]
-fn stale_ids_close_fallback_empty_workspace_and_restart_rules() {
+fn stale_ids_close_fallback_final_workspace_close_and_restart_rules() {
     let service = Service::start();
     let mut stream = service.attach(80, 24);
     let initial = next_view(&mut stream);
@@ -374,6 +379,9 @@ fn stale_ids_close_fallback_empty_workspace_and_restart_rules() {
     );
     let fallback = ack(&mut stream, 3);
     assert_eq!(fallback.active_terminal, Some(first_id));
+    assert_eq!(fallback.workspaces.len(), 1);
+    assert_eq!(fallback.active_workspace, workspace_id);
+    assert_eq!(fallback.workspaces[0].terminals.len(), 1);
     input(&mut stream, 4, second_id, b"printf wrong\r");
     until(
         &mut stream,
@@ -408,7 +416,8 @@ fn stale_ids_close_fallback_empty_workspace_and_restart_rules() {
     let empty = ack(&mut stream, 7);
     assert_eq!(empty.active_terminal, None);
     assert!(empty.terminal.is_none());
-    assert!(empty.workspaces[0].terminals.is_empty());
+    assert!(empty.workspaces.is_empty());
+    assert_eq!(empty.active_workspace, 0);
 }
 
 #[test]
@@ -473,7 +482,9 @@ fn rejected_serial_still_gets_feedback_without_decreasing_ack() {
     command(
         &mut stream,
         2,
-        CoreCommand::CreateWorkspace { name: "".into() },
+        CoreCommand::CreateWorkspace {
+            name: "x".repeat(81),
+        },
     );
     until(&mut stream, |event| {
         matches!(
@@ -549,7 +560,9 @@ fn invalid_creation_is_atomic_and_workspace_switch_remembers_the_selected_tab() 
     command(
         &mut stream,
         2,
-        CoreCommand::CreateWorkspace { name: "  ".into() },
+        CoreCommand::CreateWorkspace {
+            name: "bad\u{7}name".into(),
+        },
     );
     until(&mut stream, |e| {
         matches!(

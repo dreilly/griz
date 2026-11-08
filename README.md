@@ -29,9 +29,9 @@ Rune is the sibling checkout at `../rune`, tested at dev revision
 `7256c7c2afb605862ccfe600a469df7330509efb`. Rust is pinned to its toolchain, 1.99.1.
 For a standalone checkout later, replace the Rune path dependency with a pinned git revision.
 
-### Updating from the single-terminal version
+### Updating from an older version
 
-Workspace support uses **protocol v3**. Rebuilding does not replace a running
+Workspace closing uses **protocol v4**. Rebuilding does not replace a running
 service. The old and new versions cannot attach to each other; a version mismatch
 is reported rather than silently replacing live shells.
 
@@ -59,28 +59,47 @@ GRIZ_SOCKET="$preview_dir/core.sock" ./target/debug/griz-core --stop
 
 **Workspace → tabs → terminals.** For now, each tab contains exactly one terminal.
 
-A workspace is a **named collection**, not a project or directory. For example,
+A workspace is a **collection of terminals**, not a project or directory. For example,
 “Daily” can contain a frontend shell, backend logs, a dotfiles editor, an SSH
 connection, and a scratch shell, all in unrelated directories.
 
-- The service starts with a **Daily** workspace and one terminal.
-- Click **+** beside Workspaces to create a named workspace with its first terminal.
+- The service starts with one workspace and terminal, using its starting directory
+  as the workspace name (for example, `~/code/griz`).
+- Click **+** beside Workspaces to create a workspace with its first terminal.
+  The name is optional: blank or whitespace uses the selected shell’s **current**
+  directory, including any `cd` commands. The first terminal starts there too.
+  With no selected terminal, the service’s starting directory is used.
+- Directory names use `~` for your home directory and `~/…` for paths beneath it.
+  Paths outside your home directory remain absolute. A directory-based name is
+  chosen when you create or rename the workspace; later `cd` commands do not rename it.
 - Click a workspace in the sidebar to switch. Your selected tab is remembered for
   each workspace on that connection.
 - Click **+ Terminal** to open another independent shell. Its optional absolute
   starting directory applies only to that terminal. Blank uses the service's
   launch directory. You can also `cd` independently in any shell.
-- Click tabs to switch terminals; **Rename** changes the workspace name only.
+- Click tabs to switch terminals. Right-click any workspace for **Rename workspace…**
+  or **Close workspace…**. Rename changes only that workspace's name. Clearing the
+  name uses that workspace’s selected terminal directory, even for an inactive workspace.
+- **Close workspace** asks for confirmation, then removes the workspace and ends all
+  of its terminals and foreground jobs, for every connected window. Affected windows
+  switch to a neighboring workspace, keeping their remembered tab there. Closing the
+  last workspace hides the terminal pane and shows a centered, muted ASCII-art `$`
+  followed by a softly pulsing underscore cursor (steady with Reduce Motion enabled).
+  The artwork uses small, fixed-size monospace characters, independent of the app font
+  settings, and only shrinks to fit smaller panes. The **Create a workspace to get
+  started** button underneath uses normal UI font scaling and immediately creates a
+  workspace with its directory-based default name, even with the sidebar hidden.
 - **Close tab** asks for confirmation, then ends that terminal's shell and
-  foreground job. Other terminals are untouched. Closing the last tab leaves
-  an empty workspace, where **+ Terminal** still works.
+  foreground job. Other terminals are untouched. Closing the last tab also closes
+  its workspace for every connected window, using the same neighboring-workspace
+  fallback as **Close workspace**. If no workspaces remain, use **+** to create one.
 - A shell that exits stays visibly exited. **Start new shell** explicitly replaces
   only that ended shell, retaining the tab and its original starting directory.
   The service refuses to replace a live shell.
 
 **Switching tabs/workspaces or closing the GUI never stops terminals.** Closing a
-tab and explicitly stopping the service are deliberately different operations.
-Workspace deletion, tab renaming/reordering, and split panes are not implemented yet.
+tab, closing a workspace, and explicitly stopping the service are deliberately
+separate operations. Tab renaming/reordering and split panes are not implemented yet.
 
 ## Two processes, independent lifetimes
 
@@ -192,7 +211,7 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 
 ## What works
 
-- Named, renameable workspaces and independently running terminal tabs.
+- Optionally named, renameable workspaces and independently running terminal tabs.
 - Real local shells with input, cursor, ANSI/truecolor backgrounds and text,
   bold/italic/underline, Unicode cells, and alternate-screen state.
 - Window/sidebar resize updates libghostty and the selected PTY (SIGWINCH).
@@ -202,7 +221,7 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 
 ## Current limits
 
-- No workspace deletion, tab reordering/renaming, splits, or remote transport yet.
+- No tab reordering/renaming, splits, or remote transport yet.
 - No scrollback UI, selection/copy, mouse reporting, images, hyperlinks,
   advanced terminal keyboard protocols, or full font/glyph shaping.
 - Fixed-cell monospace rendering, not Ghostty's full renderer; basic shell/TUI use is the target.
@@ -232,7 +251,7 @@ selection acknowledgements are pending, empty workspaces, and ended-shell recove
 Other tests exercise libghostty's colors/cursor/Unicode/alternate screen/query
 responses and Rune's cell placement.
 
-For an offline GUI capture, save a protocol v3 **`view` event** (including its catalog
+For an offline GUI capture, save a protocol v4 **`view` event** (including its catalog
 and selected terminal) into a JSON file:
 
 ```sh

@@ -446,27 +446,439 @@ fn workspace_dialog_keeps_typing_out_of_the_shell_and_creates_named_collection()
 }
 
 #[test]
-fn sidebar_rename_updates_the_selected_workspace() {
+fn workspace_name_can_be_left_blank_on_create_and_rename() {
     let (state, outgoing) = mock();
     let mut rt = make_runtime(state, (1000.0, 680.0));
-    let elements = rt.elements();
-    let rename = elements
-        .iter()
-        .find(|e| e.key.as_deref() == Some("rename-workspace"))
-        .unwrap();
-    assert_eq!(
-        elements[rename.parent.unwrap()].key.as_deref(),
-        Some("sidebar")
+    click(&mut rt, "new-workspace");
+    assert!(rt.state.draft.text.is_empty());
+    commands(&outgoing);
+    click(&mut rt, "dialog-submit");
+    let sent = commands(&outgoing);
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(&sent[0].1, Command::CreateWorkspace { name } if name.is_empty()));
+    // Acknowledge creation before opening a second dialog.
+    let mut updated = snapshot();
+    updated.ack = sent[0].0;
+    rt.update(|s, _| s.apply(updated));
+    rt.frame(0.0);
+    workspace_menu(&mut rt, 2);
+    pick_workspace_menu(&mut rt, "rename");
+    rt.update(|s, _| s.draft = TextEdit::new("   "));
+    rt.frame(0.0);
+    commands(&outgoing);
+    click(&mut rt, "dialog-submit");
+    let sent = commands(&outgoing);
+    assert_eq!(sent.len(), 1);
+    assert!(
+        matches!(&sent[0].1, Command::RenameWorkspace { workspace_id: 2, name } if name.is_empty())
+    );
+}
+
+#[test]
+fn workspace_context_menu_renames_the_clicked_workspace_without_selecting_it() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1000.0, 680.0));
+    rt.frame(0.0); // Deliver the initial viewport resize before testing menu commands.
+    assert!(rt.find("rename-workspace").is_none());
+    assert!(
+        !rt.elements()
+            .iter()
+            .any(|e| e.text.as_deref().is_some_and(|t| t.contains("tabs ·")))
     );
     commands(&outgoing);
-    click(&mut rt, "rename-workspace");
+    workspace_menu(&mut rt, 2);
+    assert_eq!(
+        rt.popup_menu(),
+        Some(
+            &rune::PopupMenu::new()
+                .item(rune::PopupItem::new("rename", "Rename workspace…"))
+                .separator()
+                .item(rune::PopupItem::new("close", "Close workspace…"))
+        )
+    );
+    assert!(commands(&outgoing).is_empty());
+    assert_eq!(rt.state.snapshot.as_ref().unwrap().active_workspace, 1);
+    pick_workspace_menu(&mut rt, "rename");
+    assert_eq!(rt.state.draft.text, "Other");
     rt.update(|s, _| s.draft = TextEdit::new("Renamed"));
     rt.frame(0.0);
     click(&mut rt, "dialog-submit");
-    assert!(commands(&outgoing).iter().any(|(_, c)| matches!(
-        c,
-        Command::RenameWorkspace { workspace_id: 1, name } if name == "Renamed"
-    )));
+    let sent = commands(&outgoing);
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(
+        &sent[0].1,
+        Command::RenameWorkspace { workspace_id: 2, name } if name == "Renamed"
+    ));
+}
+
+fn workspace_menu(rt: &mut Runtime<State>, id: WorkspaceId) {
+    let (x, y) = rt.find(&format!("workspace-{id}")).unwrap();
+    rt.secondary_down(x, y);
+    rt.secondary_up(x, y);
+    rt.frame(0.0);
+}
+
+fn pick_workspace_menu(rt: &mut Runtime<State>, item: &str) {
+    rt.resolve_popup(Some(item)).unwrap();
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+}
+
+#[test]
+fn workspace_close_confirms_the_clicked_id_and_supports_cancellation() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1000.0, 680.0));
+    rt.frame(0.0);
+    commands(&outgoing);
+    workspace_menu(&mut rt, 2);
+    rt.resolve_popup(None).unwrap();
+    rt.frame(0.0);
+    assert!(rt.state.dialog.is_none());
+    workspace_menu(&mut rt, 2);
+    pick_workspace_menu(&mut rt, "close");
+    assert!(matches!(&rt.state.dialog, Some(Dialog::CloseWorkspace(2, name)) if name == "Other"));
+    assert!(rt.find("dialog-input").is_none());
+    assert!(!rt.state.draft.focused);
+    assert!(commands(&outgoing).is_empty());
+    click(&mut rt, "dialog-cancel");
+    assert!(commands(&outgoing).is_empty());
+    workspace_menu(&mut rt, 2);
+    pick_workspace_menu(&mut rt, "close");
+    // Catalog/selection updates must not retarget an open confirmation.
+    rt.update(|s, _| s.apply(snapshot()));
+    rt.frame(0.0);
+    commands(&outgoing);
+    click(&mut rt, "dialog-submit");
+    let sent = commands(&outgoing);
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(
+        sent[0].1,
+        Command::CloseWorkspace { workspace_id: 2 }
+    ));
+}
+
+#[test]
+fn workspace_menus_are_safe_when_disconnected_pending_or_target_removed() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1000.0, 680.0));
+    rt.frame(0.0);
+    commands(&outgoing);
+    workspace_menu(&mut rt, 2);
+    rt.update(|s, _| {
+        s.snapshot.as_mut().unwrap().workspaces.remove(1);
+    });
+    rt.resolve_popup(Some("close")).unwrap();
+    rt.frame(0.0);
+    assert!(rt.state.dialog.is_none());
+    rt.update(|s, _| s.pending = Some(999));
+    rt.frame(0.0);
+    workspace_menu(&mut rt, 1);
+    assert!(rt.popup_menu().is_none());
+    rt.update(|s, _| {
+        s.pending = None;
+        s.online = false;
+    });
+    rt.frame(0.0);
+    workspace_menu(&mut rt, 1);
+    assert!(rt.popup_menu().is_none());
+    assert!(commands(&outgoing).is_empty());
+}
+
+#[test]
+fn closing_the_last_workspace_leaves_creation_available() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1000.0, 680.0));
+    let mut empty = snapshot();
+    empty.workspaces.clear();
+    empty.active_workspace = 0;
+    empty.active_terminal = None;
+    empty.terminal = None;
+    rt.update(|s, _| s.apply(empty));
+    rt.frame(0.0);
+    assert!(rt.state.status.starts_with("No workspaces."));
+    assert!(rt.find("workspace-1").is_none());
+    assert!(rt.state.workspace().is_none());
+    assert!(rt.find("empty-workspaces").is_some());
+    for key in [
+        "terminal",
+        "terminal-pane",
+        "terminal-card",
+        "terminal-header",
+        "terminal-tabs",
+        "terminal-status",
+        "new-terminal",
+    ] {
+        assert!(
+            rt.find(key).is_none(),
+            "unexpected {key} in the empty state"
+        );
+    }
+    commands(&outgoing);
+    click(&mut rt, "new-workspace");
+    assert!(matches!(rt.state.dialog, Some(Dialog::NewWorkspace)));
+    rt.update(|s, _| s.draft = TextEdit::new("Fresh"));
+    rt.frame(0.0);
+    click(&mut rt, "dialog-submit");
+    assert!(
+        commands(&outgoing)
+            .iter()
+            .any(|(_, c)| matches!(c, Command::CreateWorkspace { name } if name == "Fresh"))
+    );
+}
+
+#[test]
+fn empty_workspace_placeholder_is_centered_scales_and_disappears_when_a_workspace_opens() {
+    for sidebar_open in [true, false] {
+        let (mut state, outgoing) = mock();
+        state.sidebar_open = sidebar_open;
+        let mut empty = snapshot();
+        empty.workspaces.clear();
+        empty.active_workspace = 0;
+        empty.active_terminal = None;
+        empty.terminal = None;
+        state.apply(empty);
+        let mut rt = make_runtime(state, (640.0, 420.0));
+        for _ in 0..60 {
+            rt.frame(1.0 / 60.0);
+        }
+        let ([x, y, width, height], _) = rt.presented("empty-workspaces").unwrap();
+        let ([ix, iy, iw, ih], _) = rt.presented("empty-workspaces-icon").unwrap();
+        let ([mx, my, mw, mh], _) = rt.presented("empty-workspaces-message").unwrap();
+        assert!((ix + iw / 2.0 - (x + width / 2.0)).abs() < 1.0);
+        assert!((mx + mw / 2.0 - (x + width / 2.0)).abs() < 1.0);
+        let ([_, by, _, bh], _) = rt.presented("empty-workspaces-create").unwrap();
+        assert!(((iy + by + bh) / 2.0 - (y + height / 2.0)).abs() < 1.0);
+        assert!(iw > 80.0 && ih > 60.0);
+        assert!(my > iy + ih);
+        assert!(mx >= x && mx + mw <= x + width);
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref() == Some("Create a workspace to get started"))
+        );
+        commands(&outgoing);
+        rt.key(rune::Key::Text("no shell input".into()).into());
+        rt.frame(0.0);
+        assert!(commands(&outgoing).is_empty());
+        rt.update(|s, _| s.settings.font_size = 18.0);
+        for _ in 0..60 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(size(&rt, "empty-workspaces-message")[1] > mh);
+        assert!(size(&rt, "empty-workspaces-icon")[1] <= height - 48.0);
+        rt.update(|s, _| s.apply(snapshot()));
+        rt.frame(0.0);
+        assert!(rt.find("empty-workspaces").is_none());
+        for key in [
+            "terminal",
+            "terminal-card",
+            "terminal-header",
+            "terminal-status",
+            "new-terminal",
+        ] {
+            assert!(
+                rt.find(key).is_some(),
+                "missing {key} after opening a workspace"
+            );
+        }
+    }
+}
+
+#[test]
+fn empty_workspace_ascii_prompt_is_restrained_and_fits_after_resizing() {
+    let (mut state, _) = mock();
+    let mut empty = snapshot();
+    empty.workspaces.clear();
+    empty.active_workspace = 0;
+    empty.active_terminal = None;
+    empty.terminal = None;
+    state.apply(empty);
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    let [width, height] = size(&rt, "empty-workspaces");
+    let [art_width, art_height] = size(&rt, "empty-workspaces-icon");
+    assert!(
+        art_width > width * 0.25 && art_width < width * 0.65,
+        "art should be a compact illustration, got {art_width} of {width} wide"
+    );
+    assert!(
+        art_height > height * 0.25 && art_height < height * 0.5,
+        "art should leave breathing room, got {art_height} of {height} high"
+    );
+    let elements = rt.elements();
+    let art = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("empty-workspaces-symbol"))
+        .unwrap()
+        .text
+        .as_deref()
+        .unwrap();
+    assert_eq!(art.lines().count(), 21);
+    assert!(art.chars().all(|ch| " @#%&\n".contains(ch)));
+    assert!(art.contains("@@@@@##@@@@@"));
+    let ([sx, sy, sw, sh], _) = rt.presented("empty-workspaces-symbol").unwrap();
+    let ([cx, cy, cw, ch], _) = rt.presented("empty-workspaces-cursor").unwrap();
+    assert!(
+        cx > sx + sw && cw > ch * 5.0,
+        "underscore cursor must follow the dollar artwork"
+    );
+    assert!(
+        (cy + ch - (sy + sh)).abs() < 1.0,
+        "cursor belongs at the baseline: cursor {cy}+{ch}, symbol {sy}+{sh}"
+    );
+    for (viewport, sidebar, font_size) in [
+        ((640.0, 420.0), true, 14.0),
+        ((640.0, 420.0), true, 28.0),
+        ((640.0, 420.0), false, 28.0),
+        ((1400.0, 900.0), false, 14.0),
+    ] {
+        rt.update(|s, _| {
+            s.sidebar_open = sidebar;
+            s.settings.font_size = font_size;
+        });
+        rt.set_viewport(viewport, 2.0);
+        for _ in 0..60 {
+            rt.frame(1.0 / 60.0);
+        }
+        let ([x, y, width, height], _) = rt.presented("empty-workspaces").unwrap();
+        for key in [
+            "empty-workspaces-icon",
+            "empty-workspaces-message",
+            "empty-workspaces-create",
+        ] {
+            let ([cx, cy, cw, ch], _) = rt.presented(key).unwrap();
+            assert!(
+                cx >= x && cx + cw <= x + width,
+                "{key} overflows horizontally"
+            );
+            assert!(
+                cy >= y && cy + ch <= y + height,
+                "{key} overflows vertically"
+            );
+        }
+    }
+}
+
+#[test]
+fn empty_workspace_art_ignores_font_preferences_but_the_caption_scales() {
+    let (mut state, _) = mock();
+    state.sidebar_open = false;
+    let mut empty = snapshot();
+    empty.workspaces.clear();
+    empty.active_workspace = 0;
+    empty.active_terminal = None;
+    empty.terminal = None;
+    state.apply(empty);
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    let art_size = size(&rt, "empty-workspaces-icon");
+    let caption_height = size(&rt, "empty-workspaces-message")[1];
+    for (font_size, font) in [
+        (10.0, settings::Font::Menlo),
+        (18.0, settings::Font::Monaco),
+        (28.0, settings::Font::System),
+    ] {
+        rt.update(|s, _| {
+            s.settings.font_size = font_size;
+            s.settings.font = font;
+        });
+        for _ in 0..60 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert_eq!(size(&rt, "empty-workspaces-icon"), art_size);
+        let height = size(&rt, "empty-workspaces-message")[1];
+        if font_size < 14.0 {
+            assert!(height < caption_height);
+        } else {
+            assert!(height > caption_height);
+        }
+    }
+}
+
+#[test]
+fn empty_workspace_underscore_cursor_pulses_without_rebuilding_and_respects_reduced_motion() {
+    let (mut state, outgoing) = mock();
+    let mut empty = snapshot();
+    empty.workspaces.clear();
+    empty.active_workspace = 0;
+    empty.active_terminal = None;
+    empty.terminal = None;
+    state.apply(empty);
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    rt.frame(0.0);
+    let commits = rt.stats.commits;
+    let (bounds, bright) = rt.presented("empty-workspaces-cursor").unwrap();
+    rt.frame(0.8);
+    let (dim_bounds, dim) = rt.presented("empty-workspaces-cursor").unwrap();
+    rt.frame(0.8);
+    let (_, bright_again) = rt.presented("empty-workspaces-cursor").unwrap();
+    assert!(bright > dim + 0.5 && bright_again > dim + 0.5);
+    assert_eq!(bounds, dim_bounds, "pulsing must not change layout");
+    assert_eq!(
+        rt.stats.commits, commits,
+        "pulse is renderer-owned, not a view/poll timer"
+    );
+    assert!(commands(&outgoing).is_empty());
+    rt.set_system_reduced_motion(true);
+    rt.frame(0.0);
+    let (_, still) = rt.presented("empty-workspaces-cursor").unwrap();
+    rt.frame(0.8);
+    assert_eq!(rt.presented("empty-workspaces-cursor").unwrap().1, still);
+    assert!(still > 0.9);
+    assert!(rt.wake_deadline().is_none());
+    rt.update(|s, _| s.apply(snapshot()));
+    rt.frame(0.0);
+    assert!(rt.find("empty-workspaces-cursor").is_none());
+}
+
+#[test]
+fn empty_workspace_button_creates_a_default_named_workspace_without_a_dialog() {
+    let (mut state, outgoing) = mock();
+    state.sidebar_open = false;
+    let mut empty = snapshot();
+    empty.workspaces.clear();
+    empty.active_workspace = 0;
+    empty.active_terminal = None;
+    empty.terminal = None;
+    state.apply(empty);
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    commands(&outgoing);
+    click(&mut rt, "empty-workspaces-create");
+    let sent = commands(&outgoing);
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(&sent[0].1, Command::CreateWorkspace { name } if name.is_empty()));
+    assert!(rt.state.dialog.is_none());
+    assert!(rt.state.pending.is_some());
+    click(&mut rt, "empty-workspaces-create");
+    assert!(
+        commands(&outgoing).is_empty(),
+        "pending creation must not be submitted twice"
+    );
+    let mut created = snapshot();
+    created.ack = sent[0].0;
+    rt.update(|s, _| s.apply(created));
+    rt.frame(0.0);
+    assert!(rt.find("empty-workspaces-create").is_none());
+    assert!(rt.find("terminal").is_some());
+}
+
+#[test]
+fn empty_workspace_button_does_not_create_when_offline_or_disconnected() {
+    for offline in [true, false] {
+        let (mut state, outgoing) = mock();
+        let mut empty = snapshot();
+        empty.workspaces.clear();
+        empty.active_workspace = 0;
+        empty.active_terminal = None;
+        empty.terminal = None;
+        state.apply(empty);
+        state.offline = offline;
+        state.online = false;
+        let mut rt = make_runtime(state, (1100.0, 720.0));
+        commands(&outgoing);
+        click(&mut rt, "empty-workspaces-create");
+        assert!(commands(&outgoing).is_empty());
+        assert!(rt.state.dialog.is_none());
+    }
 }
 
 #[test]

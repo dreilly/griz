@@ -3,7 +3,7 @@ use crate::Message;
 use griz_protocol::TerminalId;
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -110,6 +110,14 @@ impl Session {
         self.input.as_ref()
     }
 
+    /// Query the shell itself so `cd` works without shell-specific prompt hooks.
+    pub fn cwd(&self) -> Option<PathBuf> {
+        if self.exited.load(Ordering::Acquire) {
+            return None;
+        }
+        process_cwd(self.pid)
+    }
+
     pub fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
         self.master
             .as_ref()
@@ -153,6 +161,51 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.terminate();
     }
+}
+
+#[cfg(target_os = "macos")]
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::mem::{MaybeUninit, size_of};
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut info = MaybeUninit::<libc::proc_vnodepathinfo>::uninit();
+    let size = size_of::<libc::proc_vnodepathinfo>();
+    // SAFETY: the buffer is writable and exactly the size required for this flavor.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size as libc::c_int,
+        )
+    };
+    if written != size as libc::c_int {
+        return None;
+    }
+    // SAFETY: proc_pidinfo reported a complete initialized proc_vnodepathinfo.
+    let info = unsafe { info.assume_init() };
+    let bytes = info
+        .pvi_cdir
+        .vip_path
+        .iter()
+        .flatten()
+        .map(|byte| *byte as u8)
+        .take_while(|byte| *byte != 0)
+        .collect();
+    let path = PathBuf::from(OsString::from_vec(bytes));
+    path.is_absolute().then_some(path)
+}
+
+#[cfg(target_os = "linux")]
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_cwd(_: u32) -> Option<PathBuf> {
+    None
 }
 
 fn size(cols: u16, rows: u16) -> PtySize {

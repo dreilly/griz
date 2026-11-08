@@ -107,13 +107,14 @@ impl Service {
             &shell,
             tx.clone(),
         )?;
+        let name = workspace_name("", &default_cwd)?;
         Ok(Self {
             shell,
             default_cwd,
             tx,
             workspaces: vec![Workspace {
                 id: 1,
-                name: "Daily".into(),
+                name,
                 terminals: vec![terminal],
                 next_terminal_number: 2,
             }],
@@ -195,7 +196,7 @@ impl Service {
         rows: u16,
         outbox: Arc<Outbox>,
     ) -> Result<()> {
-        let active_workspace = self.workspaces[0].id;
+        let active_workspace = self.workspaces.first().map_or(0, |workspace| workspace.id);
         let selected = self
             .workspaces
             .iter()
@@ -281,15 +282,16 @@ impl Service {
         match command {
             Command::CreateWorkspace { name } => self.create_workspace(client_id, name),
             Command::RenameWorkspace { workspace_id, name } => {
-                let name = workspace_name(&name)?;
-                let workspace = self
+                let index = self
                     .workspaces
-                    .iter_mut()
-                    .find(|workspace| workspace.id == workspace_id)
+                    .iter()
+                    .position(|workspace| workspace.id == workspace_id)
                     .ok_or_else(|| format!("unknown workspace {workspace_id}"))?;
-                workspace.name = name;
+                let cwd = self.workspace_cwd(client_id, workspace_id);
+                self.workspaces[index].name = workspace_name(&name, &cwd)?;
                 Ok(Outcome::Catalog)
             }
+            Command::CloseWorkspace { workspace_id } => self.close_workspace(workspace_id),
             Command::SelectWorkspace { workspace_id } => {
                 let workspace = self
                     .workspaces
@@ -379,14 +381,15 @@ impl Service {
         if self.terminal_count() >= MAX_TERMINALS {
             return Err(format!("terminal limit ({MAX_TERMINALS}) reached"));
         }
-        let name = workspace_name(&name)?;
+        let cwd = self.workspace_cwd(client_id, self.clients[&client_id].active_workspace);
+        let name = workspace_name(&name, &cwd)?;
         let workspace_id = self.take_workspace_id();
         let terminal_id = self.take_terminal_id();
         let grid = self.clients[&client_id].dimensions.unwrap_or(DEFAULT_SIZE);
         let terminal = TerminalRecord::spawn(
             terminal_id,
             "Terminal 1".into(),
-            self.default_cwd.clone(),
+            cwd,
             1,
             grid,
             &self.shell,
@@ -401,6 +404,9 @@ impl Service {
         });
         for client in self.clients.values_mut() {
             client.selected.insert(workspace_id, Some(terminal_id));
+            if client.active_workspace == 0 {
+                client.active_workspace = workspace_id;
+            }
         }
         self.clients.get_mut(&client_id).unwrap().active_workspace = workspace_id;
         Ok(Outcome::Catalog)
@@ -448,11 +454,53 @@ impl Service {
         Ok(Outcome::Catalog)
     }
 
+    fn close_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+    ) -> std::result::Result<Outcome, String> {
+        let index = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == workspace_id)
+            .ok_or_else(|| format!("unknown workspace {workspace_id}"))?;
+        let mut workspace = self.workspaces.remove(index);
+        for terminal in &mut workspace.terminals {
+            terminal.session.terminate();
+            self.dirty.remove(&terminal.id);
+        }
+        // Prefer the next card, or the previous one when closing the last card.
+        let fallback = self
+            .workspaces
+            .get(index)
+            .or_else(|| self.workspaces.last())
+            .map_or(0, |workspace| workspace.id);
+        let mut fallback_sizes = Vec::new();
+        for client in self.clients.values_mut() {
+            client.selected.remove(&workspace_id);
+            if client.active_workspace == workspace_id {
+                client.active_workspace = fallback;
+                if let (Some(terminal_id), Some(size)) = (
+                    client.selected.get(&fallback).copied().flatten(),
+                    client.dimensions,
+                ) {
+                    fallback_sizes.push((terminal_id, size));
+                }
+            }
+        }
+        for (terminal_id, size) in fallback_sizes {
+            self.resize_terminal(terminal_id, size);
+        }
+        Ok(Outcome::Catalog)
+    }
+
     fn close_terminal(&mut self, terminal_id: TerminalId) -> std::result::Result<Outcome, String> {
         let (workspace_index, terminal_index) = self
             .terminal_location(terminal_id)
             .ok_or_else(|| format!("unknown terminal {terminal_id}"))?;
         let workspace_id = self.workspaces[workspace_index].id;
+        if self.workspaces[workspace_index].terminals.len() == 1 {
+            return self.close_workspace(workspace_id);
+        }
         let mut terminal = self.workspaces[workspace_index]
             .terminals
             .remove(terminal_index);
@@ -666,6 +714,30 @@ impl Service {
                     .collect(),
             })
             .collect()
+    }
+
+    fn workspace_cwd(&self, client_id: ClientId, workspace_id: WorkspaceId) -> PathBuf {
+        let selected = self.clients[&client_id]
+            .selected
+            .get(&workspace_id)
+            .copied()
+            .flatten();
+        selected
+            .and_then(|id| self.terminal_location(id))
+            .and_then(|(workspace, terminal)| {
+                let terminal = &self.workspaces[workspace].terminals[terminal];
+                terminal
+                    .session
+                    .cwd()
+                    .filter(|path| path.is_dir())
+                    .or_else(|| {
+                        terminal
+                            .initial_cwd
+                            .is_dir()
+                            .then(|| terminal.initial_cwd.clone())
+                    })
+            })
+            .unwrap_or_else(|| self.default_cwd.clone())
     }
 
     fn active_terminal(&self, client_id: ClientId) -> Option<TerminalId> {
