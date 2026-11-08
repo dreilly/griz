@@ -3,44 +3,59 @@ use crate::{Command, Dialog, State, TITLEBAR_HEIGHT, terminal_view};
 use rune::tok::type_;
 use rune::{Color, Cx, El, TextStyle, col, el, oklch, row, text, text_input};
 
-struct Palette {
-    bg: Color,
-    panel: Color,
-    line: Color,
-    ink: Color,
-    muted: Color,
-    accent: Color,
+pub(crate) struct Palette {
+    pub bg: Color,
+    pub panel: Color,
+    pub line: Color,
+    pub ink: Color,
+    pub muted: Color,
+    pub accent: Color,
+    pub label: TextStyle,
+    pub title: TextStyle,
+    pub section: TextStyle,
+    pub input: TextStyle,
 }
 
-fn palette() -> Palette {
-    Palette {
-        bg: terminal_view::color([17, 17, 20]),
-        panel: terminal_view::color([17, 17, 20]),
-        line: terminal_view::color([44, 46, 49]),
-        ink: oklch(0.91, 0.005, 260.0),
-        muted: oklch(0.64, 0.01, 260.0),
-        accent: oklch(0.78, 0.10, 155.0),
+impl Palette {
+    pub fn control_height(&self) -> f32 {
+        28.0_f32.max(self.label.line_px() + 10.0)
     }
 }
 
-fn button(key: impl Into<String>, label: &str, p: &Palette) -> El {
+fn palette(settings: &crate::settings::Settings) -> Palette {
+    let midnight = settings.theme == crate::settings::Theme::Midnight;
+    Palette {
+        bg: terminal_view::color(if midnight { [12, 17, 29] } else { [17, 17, 20] }),
+        panel: terminal_view::color(if midnight { [17, 24, 39] } else { [17, 17, 20] }),
+        line: terminal_view::color(if midnight { [42, 54, 75] } else { [44, 46, 49] }),
+        ink: oklch(0.91, 0.005, 260.0),
+        muted: oklch(0.64, 0.01, 260.0),
+        accent: oklch(0.78, 0.10, 155.0),
+        label: settings.ui_font(type_::LABEL),
+        title: settings.ui_font(type_::TITLE),
+        section: settings.ui_font(type_::SECTION),
+        input: settings.ui_font(TextStyle::new(14.0, 400.0)),
+    }
+}
+
+pub(crate) fn button(key: impl Into<String>, label: &str, p: &Palette) -> El {
     row()
         .key(key)
         .role("button")
         .label(label)
         .focusable(true)
-        .h(28.0)
+        .h(p.control_height())
         .px(10.0)
         .center_y()
         .radius(5.0)
         .hover(p.ink.alpha(0.08))
         .press(p.ink.alpha(0.12))
         .focus_ring(2.0, 2.0, p.accent)
-        .child(text(label).font(type_::LABEL).color(p.ink))
+        .child(text(label).font(p.label).color(p.ink))
 }
 
 pub fn view(state: &State, cx: &mut Cx<State>) -> El {
-    let p = palette();
+    let p = palette(&state.settings);
     let insets = cx.chrome_insets();
     cx.caption_color(p.ink);
     let titlebar = row()
@@ -53,14 +68,14 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .gap(12.0)
         .fill(p.panel)
         .window_drag()
-        .child(text("griz").font(type_::TITLE).color(p.ink))
+        .child(text("griz").font(p.title).color(p.ink))
         .child(el().grow(1.0))
         .child(
             button("toggle-sidebar", "Sidebar", &p).on_press_tx(|s: &mut State, tx| {
-                s.sidebar_open = !s.sidebar_open;
-                tx.blur();
+                s.act(crate::settings::Action::ToggleSidebar, tx);
             }),
-        );
+        )
+        .child(button("open-settings", "Settings…", &p).on_press_tx(State::open_settings));
 
     let mut workspaces = col()
         .key("workspace-list")
@@ -104,7 +119,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     })
                     .child(
                         text(workspace.name.clone())
-                            .font(type_::LABEL)
+                            .font(p.label)
                             .color(if active { p.accent } else { p.ink })
                             .truncate(),
                     )
@@ -113,7 +128,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                             "{} tabs · {running} running",
                             workspace.terminals.len()
                         ))
-                        .font(type_::LABEL)
+                        .font(p.label)
                         .color(p.muted),
                     ),
             );
@@ -122,7 +137,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
     let sidebar = state.sidebar_open.then(|| {
         col()
             .key("sidebar")
-            .w(210.0)
+            .w(210.0_f32.max(p.label.size * 14.0))
             .h_full()
             .padding(12.0)
             .gap(12.0)
@@ -132,14 +147,14 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     .w_full()
                     .px(4.0)
                     .center_y()
-                    .child(text("WORKSPACES").font(type_::SECTION).color(p.muted))
+                    .child(text("WORKSPACES").font(p.section).color(p.muted))
                     .child(el().grow(1.0))
                     .child(
                         button("new-workspace", "+", &p)
                             .label("New workspace")
                             .disabled(!state.ready())
                             .on_press_tx(|s: &mut State, tx| {
-                                s.open_dialog(Dialog::NewWorkspace, tx)
+                                s.act(crate::settings::Action::NewWorkspace, tx)
                             }),
                     ),
             )
@@ -155,7 +170,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
             )
             .child(
                 text("Switching or closing this window leaves your terminals running.")
-                    .font(type_::LABEL)
+                    .font(p.label)
                     .color(p.muted)
                     .wrap(),
             )
@@ -167,11 +182,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                         tx.blur();
                     }),
             )
-            .child(
-                text("Rune + libghostty-vt")
-                    .font(type_::LABEL)
-                    .color(p.muted),
-            )
+            .child(text("Rune + libghostty-vt").font(p.label).color(p.muted))
     });
 
     let mut tabs = row().key("terminal-tab-items").h_full().gap(4.0).center_y();
@@ -194,7 +205,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 row()
                     .key(format!("tab-container-{id}"))
                     .min_w(80.0)
-                    .h(28.0)
+                    .h(p.control_height())
                     .pr(4.0)
                     .center_y()
                     .radius(5.0)
@@ -219,12 +230,12 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                             .role("button")
                             .label(format!("Close terminal {number}"))
                             .focusable(true)
-                            .w(20.0)
-                            .h(20.0)
+                            .w(20.0_f32.max(p.label.line_px() + 4.0))
+                            .h(20.0_f32.max(p.label.line_px() + 4.0))
                             .center()
                             .radius(3.0)
                             .focus_ring(2.0, 2.0, p.accent)
-                            .child(text("×").font(type_::LABEL).color(p.muted))
+                            .child(text("×").font(p.label).color(p.muted))
                             .disabled(!state.ready())
                             .on_press_tx(move |s: &mut State, tx| {
                                 s.open_dialog(Dialog::CloseTerminal(id, close_label.clone()), tx);
@@ -259,7 +270,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .min_w(0.0)
         .padding(1.0)
         .radius(11.0)
-        .fill(terminal_view::background())
+        .fill(terminal_view::background_for(state.settings.theme))
         .border(1.0, p.line)
         .focus_within_ring(1.0, -1.0, p.accent.alpha(0.65))
         .child(
@@ -276,19 +287,14 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 .child(
                     row()
                         .key("terminal-header")
-                        .h(34.0)
+                        .h(34.0_f32.max(p.label.line_px() + 12.0))
                         .w_full()
                         .px(12.0)
                         .gap(10.0)
                         .center_y()
                         .border_sides([0.0, 0.0, 1.0, 0.0], p.line)
-                        .child(text(">_").font(type_::LABEL).color(p.muted))
-                        .child(
-                            text(terminal_label)
-                                .font(type_::LABEL)
-                                .color(p.ink)
-                                .truncate(),
-                        )
+                        .child(text(">_").font(p.label).color(p.muted))
+                        .child(text(terminal_label).font(p.label).color(p.ink).truncate())
                         .child(el().grow(1.0))
                         .children(state.shell_exited().then(|| {
                             button("start-shell", "Start new shell", &p)
@@ -313,7 +319,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .h_full()
         .child(
             row()
-                .h(38.0)
+                .h(38.0_f32.max(p.control_height() + 10.0))
                 .w_full()
                 .px(12.0)
                 .gap(8.0)
@@ -342,7 +348,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .child(
             row()
                 .key("terminal-status")
-                .h(30.0)
+                .h(30.0_f32.max(p.label.line_px() + 10.0))
                 .w_full()
                 .px(12.0)
                 .center_y()
@@ -358,7 +364,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                                 &state.status
                             }),
                     )
-                    .font(type_::LABEL)
+                    .font(p.label)
                     .color(if state.notice.is_some() {
                         p.accent
                     } else {
@@ -374,7 +380,10 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .h_full()
         .fill(p.bg)
         .on_paste(|s: &mut State, text, tx| {
-            if s.dialog.is_none() && tx.focused().is_none_or(|key| key == "terminal") {
+            if !s.settings_open
+                && s.dialog.is_none()
+                && tx.focused().is_none_or(|key| key == "terminal")
+            {
                 let bracketed = s.screen().is_some_and(|screen| screen.bracketed_paste);
                 s.input(crate::input::paste(text, bracketed));
             }
@@ -389,6 +398,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 .child(terminal),
         )
         .children(dialog(state, &p))
+        .children(crate::settings_ui::panel(state, &p))
 }
 
 fn dialog(state: &State, p: &Palette) -> Option<El> {
@@ -429,7 +439,7 @@ fn dialog(state: &State, p: &Palette) -> Option<El> {
         ),
     };
     let input = (!matches!(dialog, Dialog::CloseTerminal(..))).then(|| {
-        text_input(&state.draft, TextStyle::new(14.0, 400.0))
+        text_input(&state.draft, p.input)
             .key("dialog-input")
             .label(if matches!(dialog, Dialog::NewTerminal(_)) {
                 "Starting directory"
@@ -469,8 +479,8 @@ fn dialog(state: &State, p: &Palette) -> Option<El> {
                     .role("dialog")
                     .label(title)
                     .modal(true, |s: &mut State| s.dialog = None)
-                    .child(text(title).font(type_::TITLE).color(p.ink))
-                    .child(text(hint).font(type_::LABEL).color(p.muted).wrap())
+                    .child(text(title).font(p.title).color(p.ink))
+                    .child(text(hint).font(p.label).color(p.muted).wrap())
                     .children(input)
                     .child(
                         row()

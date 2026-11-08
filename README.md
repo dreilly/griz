@@ -116,6 +116,46 @@ This is intentionally simpler than Rex's per-client raw-byte streaming design:
 terminal emulation remains authoritative in the service. Splits and more efficient
 frame encoding can be added behind the same ownership boundary.
 
+## Settings and keyboard shortcuts
+
+Open **Settings…** with **⌘,**, the titlebar Settings button, or the macOS app
+menu. Settings opens as an in-app modal panel, including while disconnected.
+
+- **Appearance:** choose Menlo, Monaco, or the system monospace terminal font;
+  adjust the app-wide font size from 10–28 pt; choose Dark or Midnight. Font size
+  scales sidebar text, tabs, buttons, dialogs, Settings, and terminals together,
+  preserving the UI's type hierarchy. Changes apply immediately, including terminal
+  cell geometry and PTY dimensions. **⌘+ / ⌘−** increase/decrease size anywhere in
+  the app, including Settings and text fields (**⌘=** also increases size).
+  Themes change the interface
+  and terminal base background; applications' explicit ANSI colors are preserved.
+- **Shortcuts:** search actions, click a binding, then press a new combination.
+  Conflicts are rejected; **Clear** disables a binding and **Reset** restores its
+  default. Escape cancels recording before dismissing Settings. Shortcuts require
+  Command, Control, or Option; Settings and native editing/system shortcuts are reserved.
+  Font sizing and closing the active terminal are app-wide commands; other actions
+  only run with terminal focus. Closing is suppressed while a modal is open.
+- Defaults: **⌘T** opens a terminal using the service default directory,
+  **⌘W** confirms closing the **active terminal**, **⇧⌘N** opens New Workspace,
+  **⌘B** toggles the sidebar, and **⇧⌘→ / ⇧⌘←** cycle through tabs.
+  Closing targets a captured terminal ID, not a tab or window. When split panes are
+  added, this action will target the focused terminal within the tab.
+  The Settings shortcut **⌘,** stays fixed so Settings is always reachable.
+
+Preferences save automatically through Rune's atomic JSON store. On macOS the file
+is `~/Library/Application Support/griz/prefs.json`; on Linux it is
+`$XDG_CONFIG_HOME/griz/prefs.json` (falling back to `~/.config/griz/prefs.json`).
+There is no need to edit it. A save failure is shown in the panel while the change
+remains active for this run. A malformed JSON file is preserved as `prefs.json.bad`;
+invalid individual preferences use safe fallbacks and show a warning in Settings.
+Preferences are loaded when a GUI starts; already-open GUI processes do not live-sync
+settings with each other. Offline `--frame` captures and GUI tests use in-memory
+preferences and never write the user's file.
+
+These are GUI preferences, not workspace/session persistence. Shell defaults are
+still configured through `griz-core`'s launch options below; changing appearance or
+shortcuts never restarts running shells.
+
 ## Session lifetime and configuration
 
 The GUI attaches to an existing core or starts the `griz-core` executable beside it
@@ -165,7 +205,7 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 - No workspace deletion, tab reordering/renaming, splits, or remote transport yet.
 - No scrollback UI, selection/copy, mouse reporting, images, hyperlinks,
   advanced terminal keyboard protocols, or full font/glyph shaping.
-- Fixed-cell Menlo rendering, not Ghostty's full renderer; basic shell/TUI use is the target.
+- Fixed-cell monospace rendering, not Ghostty's full renderer; basic shell/TUI use is the target.
 - Full snapshots, not dirty-cell deltas. Limits: 16 workspaces, 64 terminals total,
   16 clients, 300 × 120 cells per grid, 256 KiB per input/paste, and 16 MiB per IPC message.
 - Starting directories must be absolute existing paths; no file picker or `~` expansion.

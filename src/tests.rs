@@ -1,3 +1,8 @@
+#[path = "tests/font_and_close.rs"]
+mod font_and_close;
+#[path = "tests/settings.rs"]
+mod settings_tests;
+
 use super::*;
 use griz_protocol::{Request, TerminalFrame, TerminalInfo, WorkspaceInfo};
 use rune::{Env, Runtime};
@@ -133,7 +138,10 @@ fn terminal_card_is_inset_with_a_header_and_shared_charcoal_surface() {
     ]) {
         assert!((actual - expected).abs() < 0.1);
     }
-    assert_eq!(card.fill, terminal_view::background());
+    assert_eq!(
+        card.fill,
+        terminal_view::background_for(rt.state.settings.theme)
+    );
     assert_eq!(viewport.fill, card.fill);
     assert_ne!(element("root").fill, card.fill);
     for (actual, expected) in card.rect.into_iter().zip([
@@ -149,7 +157,7 @@ fn terminal_card_is_inset_with_a_header_and_shared_charcoal_surface() {
     assert!(element("terminal-status").rect[1] > card.rect[1] + card.rect[3]);
     assert_eq!(
         rt.state.grid,
-        terminal_view::grid(viewport.rect[2], viewport.rect[3])
+        terminal_view::grid_for(viewport.rect[2], viewport.rect[3], &rt.state.settings)
     );
 }
 
@@ -330,9 +338,10 @@ fn rune_renderer_places_styled_and_wide_cells_on_the_grid() {
     let wide = glyph("界");
     let b = glyph("B");
     let c = glyph("C");
-    assert!((wide.rect[0] - a.rect[0] - terminal_view::CELL_WIDTH).abs() < 0.1);
-    assert!((b.rect[0] - a.rect[0] - 3.0 * terminal_view::CELL_WIDTH).abs() < 0.1);
-    assert!((c.rect[1] - a.rect[1] - terminal_view::CELL_HEIGHT).abs() < 0.1);
+    let (cell_width, cell_height) = terminal_view::cell_size(&rt.state.settings);
+    assert!((wide.rect[0] - a.rect[0] - cell_width).abs() < 0.1);
+    assert!((b.rect[0] - a.rect[0] - 3.0 * cell_width).abs() < 0.1);
+    assert!((c.rect[1] - a.rect[1] - cell_height).abs() < 0.1);
     assert_eq!(c.text_color, Some(terminal_view::color([1, 2, 3])));
     assert!(rt.find("terminal-cursor").is_some());
 }
@@ -522,7 +531,7 @@ fn empty_workspace_and_small_window_remain_usable() {
     let mut rt = runtime((640.0, 420.0));
     let [width, height] = size(&rt, "terminal");
     // The inset card and its header still leave room for a useful 40 × 9 grid.
-    let (cols, rows) = terminal_view::grid(width, height);
+    let (cols, rows) = terminal_view::grid_for(width, height, &rt.state.settings);
     assert!(cols >= 40 && rows >= 9, "grid is {cols} × {rows}");
     let mut empty = snapshot();
     empty.workspaces[0].terminals.clear();
