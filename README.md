@@ -195,6 +195,11 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   live, and exited shells keep their last known path. Matches are case-insensitive and allow abbreviations and multiple search words.
   Workspace results restore that workspace’s remembered tab; terminal results select
   that exact terminal, including when it belongs to another workspace.
+  The highlighted result shows a **live, read-only preview** of its tab, including
+  split panes. Workspace previews use your remembered tab and focused pane;
+  terminal previews highlight the exact pane. Browsing never switches workspaces,
+  resizes terminals, or sends input. The preview sits beside results in wide windows
+  and below them in narrower windows; very short windows keep the results-only layout.
 - **⇧⌘P** opens **Commands**: create a workspace here (using the selected shell’s
   current directory), open terminals, choose a terminal starting directory, rename
   or close the current workspace, split panes, cycle pane focus, close the active terminal, cycle tabs, toggle the
@@ -306,6 +311,8 @@ selection acknowledgements are pending, empty workspaces, and ended-shell recove
 Split tests cover nested layouts, both directions, rounded pane spacing, per-pane
 resizing, focus/input acknowledgement safety, cwd inheritance, sibling output,
 multi-client selection, layout collapse, stable tab IDs, and pane limits.
+Navigation preview tests cover live hidden-pane output, subscription isolation,
+unchanged selection/dimensions, stale targets, dismissal, and fitted split miniatures.
 Other tests exercise libghostty's colors/cursor/Unicode/alternate screen/query
 responses and Rune's cell placement.
 

@@ -1,11 +1,12 @@
 use super::*;
 use rune::{Chord, Key, Mods};
 
-// Layout can resize the mock terminal; palette assertions concern addressed actions.
+// Layout and preview subscriptions are not navigation/terminal actions.
+// Dedicated preview tests below assert those subscriptions separately.
 fn commands(outgoing: &Receiver<Request>) -> Vec<(u64, Command)> {
     super::commands(outgoing)
         .into_iter()
-        .filter(|(_, c)| !matches!(c, Command::Resize { .. }))
+        .filter(|(_, c)| !matches!(c, Command::Resize { .. } | Command::SetPreview { .. }))
         .collect()
 }
 
@@ -30,18 +31,18 @@ fn ctrl(letter: char) -> KeyEvent {
     }
 }
 
-fn press(rt: &mut Runtime<State>, key: impl Into<KeyEvent>) {
+pub(super) fn press(rt: &mut Runtime<State>, key: impl Into<KeyEvent>) {
     rt.key(key.into());
     rt.frame(0.0);
 }
 
-fn settle(rt: &mut Runtime<State>) {
+pub(super) fn settle(rt: &mut Runtime<State>) {
     for _ in 0..60 {
         rt.frame(1.0 / 60.0);
     }
 }
 
-fn open(rt: &mut Runtime<State>, commands: bool) {
+pub(super) fn open(rt: &mut Runtime<State>, commands: bool) {
     press(rt, primary('p', commands));
     settle(rt);
     assert!(rt.find("command-palette").is_some());

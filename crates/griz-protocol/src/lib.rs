@@ -10,7 +10,7 @@ pub const MAX_COLS: u16 = 300;
 pub const MAX_ROWS: u16 = 120;
 pub const MAX_WORKSPACES: usize = 16;
 pub const MAX_TERMINALS: usize = 64;
-/// Bound the number of full terminal frames carried in one client view.
+/// Bound frames per tab; a client view includes the active tab and, optionally, one preview tab.
 pub const MAX_PANES_PER_TAB: usize = 8;
 pub type WorkspaceId = u64;
 pub type TerminalId = u64;
@@ -152,6 +152,27 @@ pub struct TerminalFrame {
     pub exited: Option<String>,
 }
 
+/// A read-only preview subscription, independent of the client's real selection.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PreviewTarget {
+    Workspace {
+        workspace_id: WorkspaceId,
+    },
+    Terminal {
+        workspace_id: WorkspaceId,
+        terminal_id: TerminalId,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct PreviewFrame {
+    pub target: PreviewTarget,
+    pub layout: PaneLayout,
+    pub selected: TerminalId,
+    pub terminals: Vec<TerminalFrame>,
+}
+
 /// A consistent catalog + selected screen for one client. Selection is per client.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ViewState {
@@ -167,6 +188,9 @@ pub struct ViewState {
     pub terminals: Vec<TerminalFrame>,
     /// The selected frame, retained for callers that only support one terminal.
     pub terminal: Option<TerminalFrame>,
+    /// Only populated while this client is browsing a navigation preview.
+    #[serde(default)]
+    pub preview: Option<Box<PreviewFrame>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -181,6 +205,10 @@ pub enum Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
+    /// Subscribe to one tab's screens without selecting, resizing, or focusing it.
+    SetPreview {
+        target: Option<PreviewTarget>,
+    },
     /// Blank names use the selected shell's current directory as the name.
     /// The first terminal inherits that directory, or the service default if none is selected.
     CreateWorkspace {

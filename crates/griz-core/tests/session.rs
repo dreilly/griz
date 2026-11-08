@@ -16,6 +16,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod accents;
 #[path = "session/naming.rs"]
 mod naming;
+#[path = "session/previews.rs"]
+mod previews;
 #[path = "session/splits.rs"]
 mod splits;
 #[path = "session/workspaces.rs"]

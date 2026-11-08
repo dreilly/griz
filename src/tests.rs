@@ -4,6 +4,8 @@ mod buttons;
 mod command_palette_tests;
 #[path = "tests/font_and_close.rs"]
 mod font_and_close;
+#[path = "tests/navigation_previews.rs"]
+mod navigation_previews;
 #[path = "tests/settings.rs"]
 mod settings_tests;
 #[path = "tests/splits.rs"]
@@ -61,6 +63,7 @@ fn snapshot() -> ViewState {
         ],
         active_workspace: 1,
         active_terminal: Some(1),
+        preview: None,
         terminals: vec![],
         terminal: Some(TerminalFrame {
             id: 1,

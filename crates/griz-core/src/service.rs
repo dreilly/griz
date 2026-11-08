@@ -4,8 +4,8 @@ use crate::validation::{directory_label, directory_path, validate_cwd, workspace
 use crate::{ClientId, Message};
 use griz_protocol::{
     Command, Event, MAX_INPUT, MAX_PANES_PER_TAB, MAX_TERMINALS, MAX_WORKSPACES, PaneLayout,
-    Screen, SplitDirection, TabInfo, TerminalFrame, TerminalId, TerminalInfo, ViewState,
-    WorkspaceAccent, WorkspaceId, WorkspaceInfo, dimensions,
+    PreviewFrame, PreviewTarget, Screen, SplitDirection, TabInfo, TerminalFrame, TerminalId,
+    TerminalInfo, ViewState, WorkspaceAccent, WorkspaceId, WorkspaceInfo, dimensions,
 };
 use griz_vt::Terminal;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -81,6 +81,7 @@ struct Client {
     active_workspace: WorkspaceId,
     selected: HashMap<WorkspaceId, Option<TerminalId>>,
     dimensions: Option<(u16, u16)>,
+    preview: Option<PreviewTarget>,
     ack: u64,
     outbox: Arc<Outbox>,
 }
@@ -245,6 +246,7 @@ impl Service {
                 active_workspace,
                 selected,
                 dimensions: client_dimensions,
+                preview: None,
                 ack: 0,
                 outbox,
             },
@@ -290,7 +292,10 @@ impl Service {
 
         // Selection/name changes should use a fresh cwd immediately, not wait for
         // the next poll. Do not perform process queries on every keystroke or resize.
-        let refresh = !matches!(&command, Command::Input { .. } | Command::Resize { .. });
+        let refresh = !matches!(
+            &command,
+            Command::Input { .. } | Command::Resize { .. } | Command::SetPreview { .. }
+        );
         let outcome = self.apply_command(client_id, command);
         let directories_changed = refresh && self.refresh_directories();
         match outcome {
@@ -317,6 +322,12 @@ impl Service {
         command: Command,
     ) -> std::result::Result<Outcome, String> {
         match command {
+            Command::SetPreview { target } => {
+                // Invalidated targets simply produce no preview; catalog changes can race
+                // navigation. Never change remembered selections or terminal dimensions.
+                self.clients.get_mut(&client_id).unwrap().preview = target;
+                Ok(Outcome::Requester)
+            }
             Command::CreateWorkspace { name } => self.create_workspace(client_id, name),
             Command::RenameWorkspace { workspace_id, name } => {
                 let index = self
@@ -754,7 +765,7 @@ impl Service {
         {
             eprintln!("griz-core: terminal {terminal_id} response: {error}");
         }
-        if self.terminal_is_visible(terminal_id) {
+        if self.terminal_is_observed(terminal_id) {
             self.dirty.insert(terminal_id);
             self.frame_deadline
                 .get_or_insert_with(|| Instant::now() + FRAME_INTERVAL);
@@ -794,7 +805,7 @@ impl Service {
             eprintln!("griz-core: terminal {terminal_id} PTY resize: {error}");
         }
         terminal.grid = size;
-        if self.terminal_is_visible(terminal_id) {
+        if self.terminal_is_observed(terminal_id) {
             self.dirty.insert(terminal_id);
             self.frame_deadline
                 .get_or_insert_with(|| Instant::now() + FRAME_INTERVAL);
@@ -807,7 +818,7 @@ impl Service {
             .keys()
             .copied()
             .filter(|client_id| {
-                self.visible_terminal_ids(*client_id)
+                self.observed_terminal_ids(*client_id)
                     .iter()
                     .any(|terminal_id| self.dirty.contains(terminal_id))
             })
@@ -836,7 +847,7 @@ impl Service {
                         *client_id,
                         client.active_workspace,
                         active_terminal,
-                        self.visible_terminal_ids(*client_id),
+                        self.observed_terminal_ids(*client_id),
                         client.ack,
                         client.outbox.clone(),
                     )
@@ -857,7 +868,7 @@ impl Service {
             }
         }
         for (client_id, active_workspace, active_terminal, terminal_ids, ack, outbox) in specs {
-            let terminals = terminal_ids
+            let frames = terminal_ids
                 .into_iter()
                 .filter_map(|terminal_id| {
                     let (workspace_index, terminal_index) = self.terminal_location(terminal_id)?;
@@ -870,6 +881,24 @@ impl Service {
                     })
                 })
                 .collect::<Vec<_>>();
+            let preview = self
+                .preview_tab(client_id)
+                .map(|(target, selected, tab)| PreviewFrame {
+                    target,
+                    selected,
+                    layout: tab.layout.clone(),
+                    terminals: frames
+                        .iter()
+                        .filter(|frame| tab.layout.contains(frame.id))
+                        .cloned()
+                        .collect(),
+                })
+                .map(Box::new);
+            let visible = self.visible_terminal_ids(client_id);
+            let terminals: Vec<_> = frames
+                .into_iter()
+                .filter(|frame| visible.contains(&frame.id))
+                .collect();
             let terminal = active_terminal
                 .and_then(|terminal_id| terminals.iter().find(|frame| frame.id == terminal_id))
                 .cloned();
@@ -883,6 +912,7 @@ impl Service {
                     active_terminal,
                     terminals,
                     terminal,
+                    preview,
                 },
             });
         }
@@ -1004,6 +1034,47 @@ impl Service {
             .map_or_else(Vec::new, |tab| tab.layout.terminal_ids())
     }
 
+    fn preview_tab(&self, client_id: ClientId) -> Option<(PreviewTarget, TerminalId, &TabInfo)> {
+        let client = self.clients.get(&client_id)?;
+        let target = client.preview?;
+        let (workspace_id, requested) = match target {
+            PreviewTarget::Workspace { workspace_id } => (workspace_id, None),
+            PreviewTarget::Terminal {
+                workspace_id,
+                terminal_id,
+            } => (workspace_id, Some(terminal_id)),
+        };
+        let workspace = self.workspaces.iter().find(|w| w.id == workspace_id)?;
+        let selected = requested
+            .or_else(|| client.selected.get(&workspace_id).copied().flatten())
+            .or_else(|| {
+                workspace
+                    .tabs
+                    .first()?
+                    .layout
+                    .terminal_ids()
+                    .first()
+                    .copied()
+            })?;
+        let tab = workspace
+            .tabs
+            .iter()
+            .find(|tab| tab.layout.contains(selected))?;
+        Some((target, selected, tab))
+    }
+
+    fn observed_terminal_ids(&self, client_id: ClientId) -> Vec<TerminalId> {
+        let mut ids = self.visible_terminal_ids(client_id);
+        if let Some((_, _, tab)) = self.preview_tab(client_id) {
+            for id in tab.layout.terminal_ids() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
+    }
+
     fn terminal_tab_is_split(&self, terminal_id: TerminalId) -> bool {
         self.workspaces.iter().any(|workspace| {
             workspace
@@ -1013,10 +1084,11 @@ impl Service {
         })
     }
 
-    fn terminal_is_visible(&self, terminal_id: TerminalId) -> bool {
-        self.clients
-            .keys()
-            .any(|client_id| self.visible_terminal_ids(*client_id).contains(&terminal_id))
+    fn terminal_is_observed(&self, terminal_id: TerminalId) -> bool {
+        self.clients.keys().any(|client_id| {
+            self.observed_terminal_ids(*client_id)
+                .contains(&terminal_id)
+        })
     }
 
     fn terminal_location(&self, terminal_id: TerminalId) -> Option<(usize, usize)> {

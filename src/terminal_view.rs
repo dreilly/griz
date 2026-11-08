@@ -117,6 +117,36 @@ pub fn viewport(state: &State, id: Option<TerminalId>, split: bool) -> El {
     viewport
 }
 
+/// A fitted, inert miniature. This deliberately does not use `viewport`: previews
+/// must never focus a terminal, register an IME cursor, or resize the underlying PTY.
+pub fn preview(
+    id: TerminalId,
+    screen: &Screen,
+    settings: &Settings,
+    width: f32,
+    height: f32,
+) -> El {
+    let (cw, ch) = cell_size(settings);
+    let scale = ((width - 12.0).max(0.0) / (f32::from(screen.cols) * cw).max(1.0))
+        .min((height - 12.0).max(0.0) / (f32::from(screen.rows) * ch).max(1.0))
+        .min(1.0);
+    let mut miniature = settings.clone();
+    miniature.font_size *= scale;
+    let (cw, ch) = (cw * scale, ch * scale);
+    el().size(width, height)
+        .fill(background_for(settings.theme))
+        .clip_soft(0.0)
+        .inert()
+        .child(
+            screen_grid(screen, &miniature, cw, ch, false)
+                .key(format!("preview-screen-grid-{id}"))
+                .absolute(
+                    ((width - f32::from(screen.cols) * cw) / 2.0).max(0.0),
+                    ((height - f32::from(screen.rows) * ch) / 2.0).max(0.0),
+                ),
+        )
+}
+
 fn font(settings: &Settings, height: f32, bold: bool, italic: bool) -> TextStyle {
     let style = TextStyle::new(settings.font_size, if bold { 700.0 } else { 400.0 })
         .family(settings.font.family())

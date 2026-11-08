@@ -2,6 +2,7 @@
 mod client;
 mod command_palette;
 mod input;
+mod navigation_preview;
 mod panes;
 mod settings;
 mod settings_ui;
@@ -91,7 +92,7 @@ impl Default for State {
 
 impl State {
     fn open_settings(&mut self, tx: &mut Tx) {
-        self.palette.close();
+        command_palette::close(self);
         self.dialog = None;
         self.preedit.clear();
         self.recording = None;
@@ -300,6 +301,7 @@ impl State {
                 .snapshot
                 .as_ref()
                 .map(|s| (s.core_pid, s.active_workspace, s.active_terminal));
+            self.palette.reset_preview();
             self.client = Some(client::Client::start(self.grid, wake.clone()));
             self.pending = None;
             self.online = false;
@@ -463,6 +465,7 @@ impl State {
                 self.resize();
             }
         }
+        command_palette::sync_preview(self);
     }
 
     fn request_close_terminal(&mut self, id: TerminalId, tx: &mut Tx) {
@@ -500,7 +503,8 @@ impl State {
             // Other dialogs start blank; the core resolves their directory defaults.
             _ => "",
         };
-        self.palette.close();
+        let value = value.to_owned();
+        command_palette::close(self);
         self.draft = TextEdit::new(value);
         self.draft.focused = !matches!(
             dialog,

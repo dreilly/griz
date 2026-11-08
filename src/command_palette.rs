@@ -1,6 +1,6 @@
 //! Client-side quick navigation and command discovery. No PTY/session ownership here.
 use crate::{Command, Dialog, State, settings::Action, ui::Palette};
-use griz_protocol::{TerminalId, WorkspaceId};
+use griz_protocol::{PreviewTarget, TerminalId, WorkspaceId};
 use rune::{Color, Cx, El, Key, KeyEvent, TextEdit, Tx, col, el, row, text, text_input};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +26,7 @@ pub(crate) struct PaletteState {
     mode: Option<Mode>,
     query: TextEdit,
     selected: Option<Target>,
+    requested_preview: Option<PreviewTarget>,
 }
 
 impl Default for PaletteState {
@@ -34,6 +35,7 @@ impl Default for PaletteState {
             mode: None,
             query: TextEdit::new(""),
             selected: None,
+            requested_preview: None,
         }
     }
 }
@@ -41,6 +43,10 @@ impl Default for PaletteState {
 impl PaletteState {
     pub fn is_open(&self) -> bool {
         self.mode.is_some()
+    }
+
+    pub fn reset_preview(&mut self) {
+        self.requested_preview = None;
     }
 
     pub fn close(&mut self) {
@@ -103,7 +109,32 @@ pub(crate) fn open(state: &mut State, action: Action, tx: &mut Tx) {
     state.palette.query.focused = true;
     state.palette.selected = None;
     state.preedit.clear();
+    sync_preview(state);
     tx.blur();
+}
+
+pub(crate) fn close(state: &mut State) {
+    state.palette.close();
+    sync_preview(state);
+}
+
+/// Keep the subscription tied to the same resolved highlight used by Enter and rendering.
+/// This also handles a target disappearing or a connection becoming unavailable.
+pub(crate) fn sync_preview(state: &mut State) {
+    let entries = entries(state);
+    let target = selected_index(state, &entries).and_then(|index| match entries[index].target {
+        Target::Workspace(workspace_id) => Some(PreviewTarget::Workspace { workspace_id }),
+        Target::Terminal(workspace_id, terminal_id) => Some(PreviewTarget::Terminal {
+            workspace_id,
+            terminal_id,
+        }),
+        _ => None,
+    });
+    if target != state.palette.requested_preview
+        && state.send(Command::SetPreview { target }).is_some()
+    {
+        state.palette.requested_preview = target;
+    }
 }
 
 // All query words must match. Prefer contiguous matches, but allow abbreviations such as
@@ -276,7 +307,7 @@ fn activate(state: &mut State, target: Target, tx: &mut Tx) {
     {
         return;
     }
-    state.palette.close();
+    close(state);
     tx.blur();
     match target {
         Target::Workspace(workspace_id) => state.change(Command::SelectWorkspace { workspace_id }),
@@ -318,7 +349,7 @@ pub(crate) fn key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         return false;
     }
     if event.key == Key::Escape {
-        state.palette.close();
+        close(state);
         tx.blur();
         return true;
     }
@@ -354,6 +385,7 @@ pub(crate) fn key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
             let entry = &entries[enabled[index]];
             state.palette.selected = Some(entry.target);
             tx.scroll_into_view(entry.key());
+            sync_preview(state);
         }
         return true;
     }
@@ -375,11 +407,21 @@ pub(crate) fn panel(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
     let selected = selected_index(state, &entries);
     let [width, height] = cx.layout_size("root").unwrap_or([1100.0, 720.0]);
     let top = (height * 0.12).clamp(12.0, 80.0);
+    let show_preview = mode == Mode::Navigate && height >= 480.0;
+    let side_by_side = show_preview && width >= 900.0;
+    let panel_width = (width - 24.0).clamp(1.0, if side_by_side { 1040.0 } else { 640.0 });
+    let panel_height = (height - top - 16.0).clamp(1.0, if show_preview { 560.0 } else { 460.0 });
+    let inner_width = (panel_width - 24.0).max(1.0);
+    let list_width = if side_by_side {
+        inner_width * 0.42
+    } else {
+        inner_width
+    };
     let mut list = col()
         .key("palette-results")
         .role("listbox")
         .label("Palette results")
-        .w_full()
+        .w(list_width)
         .grow(1.0)
         .min_h(0.0)
         .gap(4.0)
@@ -445,6 +487,53 @@ pub(crate) fn panel(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
             .padding(12.0),
         );
     }
+    let body = if show_preview {
+        let selected_entry = selected.map(|index| &entries[index]);
+        let target = selected_entry.and_then(|entry| match entry.target {
+            Target::Workspace(workspace_id) => Some(PreviewTarget::Workspace { workspace_id }),
+            Target::Terminal(workspace_id, terminal_id) => Some(PreviewTarget::Terminal {
+                workspace_id,
+                terminal_id,
+            }),
+            _ => None,
+        });
+        let preview_width = if side_by_side {
+            inner_width - list_width - 12.0
+        } else {
+            inner_width
+        };
+        // Reserve the search, heading, footer and their padding before fitting the miniature.
+        let available = (panel_height
+            - 80.0
+            - p.section.line_px()
+            - p.input.line_px()
+            - p.label.line_px() * 2.0)
+            .max(40.0);
+        let preview_height = if side_by_side {
+            available
+        } else {
+            (available * 0.45).min(180.0)
+        };
+        let preview = crate::navigation_preview::panel(
+            state,
+            p,
+            target,
+            selected_entry.map_or("PREVIEW", |entry| &entry.title),
+            preview_width,
+            preview_height,
+        );
+        let container = if side_by_side { row() } else { col() };
+        container
+            .key("palette-body")
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .gap(12.0)
+            .child(list)
+            .child(preview)
+    } else {
+        list
+    };
     Some(
         el().key("palette-scrim")
             .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
@@ -452,9 +541,9 @@ pub(crate) fn panel(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
             .child(
                 col()
                     .key("command-palette")
-                    .absolute(((width - 640.0) / 2.0).max(12.0), top)
-                    .w((width - 24.0).clamp(1.0, 640.0))
-                    .h((height - top - 16.0).clamp(1.0, 460.0))
+                    .absolute(((width - panel_width) / 2.0).max(12.0), top)
+                    .w(panel_width)
+                    .h(panel_height)
                     .padding(12.0)
                     .gap(10.0)
                     .radius(12.0)
@@ -467,7 +556,7 @@ pub(crate) fn panel(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
                     } else {
                         "Command palette"
                     })
-                    .modal(true, |s: &mut State| s.palette.close())
+                    .modal(true, close)
                     .on_key(key)
                     .child(
                         text(if mode == Mode::Navigate {
@@ -499,6 +588,7 @@ pub(crate) fn panel(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
                             .on_edit(|s: &mut State| &mut s.palette.query)
                             .on_input_change(|s: &mut State, tx| {
                                 s.palette.selected = None;
+                                sync_preview(s);
                                 if let Some(entry) = self::entries(s).iter().find(|e| e.enabled) {
                                     tx.scroll_into_view(entry.key());
                                 }
@@ -515,7 +605,7 @@ pub(crate) fn panel(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
                         }
                         input
                     })
-                    .child(list)
+                    .child(body)
                     .child(
                         text("↑ ↓ / Ctrl-N Ctrl-P to move · Enter to select · Esc to dismiss")
                             .font(p.label)
