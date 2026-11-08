@@ -1,6 +1,19 @@
 use super::*;
 
+#[path = "naming/live.rs"]
+mod live;
+
 fn label(path: &std::path::Path) -> String {
+    if std::env::var_os("HOME").as_deref() == Some(path.as_os_str()) {
+        return "~".into();
+    }
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn full_path(path: &std::path::Path) -> String {
     let home = PathBuf::from(std::env::var_os("HOME").unwrap());
     match path.strip_prefix(home) {
         Ok(relative) if relative.as_os_str().is_empty() => "~".into(),
@@ -37,6 +50,8 @@ fn unnamed_workspace_uses_live_shell_directory_and_starts_its_terminal_there() {
         .find(|w| w.id == created.active_workspace)
         .unwrap();
     assert_eq!(workspace.name, label(&cwd));
+    assert!(workspace.custom_name.is_none());
+    assert_eq!(workspace.directory, full_path(&cwd));
     assert_eq!(workspace.terminals[0].initial_cwd, cwd.to_string_lossy());
     input(
         &mut stream,
@@ -64,6 +79,10 @@ fn blank_rename_uses_the_target_workspaces_directory_not_the_active_workspace() 
     let created = ack(&mut stream, 1);
     let workspace_id = created.active_workspace;
     assert_eq!(created.workspaces[1].name, "Custom name");
+    assert_eq!(
+        created.workspaces[1].custom_name.as_deref(),
+        Some("Custom name")
+    );
     let cwd = service.dir.join("other-project");
     fs::create_dir(&cwd).unwrap();
     let script = format!("cd '{}'; printf 'rename-ready-%s\\n' yes\r", cwd.display());
@@ -97,6 +116,11 @@ fn blank_rename_uses_the_target_workspaces_directory_not_the_active_workspace() 
         label(&cwd.canonicalize().unwrap())
     );
     assert_eq!(renamed.workspaces[0].name, label(&service.dir));
+    assert!(renamed.workspaces[1].custom_name.is_none());
+    assert_eq!(
+        renamed.workspaces[1].directory,
+        full_path(&cwd.canonicalize().unwrap())
+    );
 }
 
 #[test]

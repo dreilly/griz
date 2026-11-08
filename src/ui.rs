@@ -95,6 +95,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     .key(format!("workspace-{id}"))
                     .role("button")
                     .label(format!("Switch to workspace {}", workspace.name))
+                    .help(workspace.directory.clone())
                     .focusable(true)
                     .disabled(!state.ready())
                     .w_full()
@@ -410,6 +411,87 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
 
 const EMPTY_WORKSPACE_ART: &str = include_str!("empty_workspace.txt");
 
+/// Shared by the real action and Settings samples so previews stay exact.
+pub(crate) fn workspace_button(
+    key: impl Into<String>,
+    style: crate::settings::WorkspaceButtonStyle,
+    p: &Palette,
+    label_key: impl Into<String>,
+) -> El {
+    use crate::settings::WorkspaceButtonStyle;
+    let (fill, border, hover, press, ink, radius) = match style {
+        WorkspaceButtonStyle::Soft => (
+            p.ink.alpha(0.08),
+            p.ink.alpha(0.08),
+            p.ink.alpha(0.12),
+            p.ink.alpha(0.18),
+            p.ink,
+            6.0,
+        ),
+        WorkspaceButtonStyle::Outline => (
+            Color::TRANSPARENT,
+            p.ink.alpha(0.35),
+            p.ink.alpha(0.05),
+            p.ink.alpha(0.10),
+            p.ink,
+            6.0,
+        ),
+        WorkspaceButtonStyle::Solid => (
+            p.ink,
+            Color::TRANSPARENT,
+            p.ink.alpha(0.90),
+            p.ink.alpha(0.75),
+            p.bg,
+            6.0,
+        ),
+        WorkspaceButtonStyle::Ghost => (
+            Color::TRANSPARENT,
+            Color::TRANSPARENT,
+            p.ink.alpha(0.06),
+            p.ink.alpha(0.12),
+            p.ink,
+            6.0,
+        ),
+        WorkspaceButtonStyle::Pill => (
+            p.ink.alpha(0.08),
+            p.ink.alpha(0.18),
+            p.ink.alpha(0.12),
+            p.ink.alpha(0.18),
+            p.ink,
+            999.0,
+        ),
+        WorkspaceButtonStyle::Accent => (
+            p.accent.alpha(0.12),
+            p.accent.alpha(0.25),
+            p.accent.alpha(0.18),
+            p.accent.alpha(0.24),
+            p.ink,
+            6.0,
+        ),
+    };
+    col()
+        .key(key)
+        .role("button")
+        .label("Create a workspace to get started")
+        .focusable(true)
+        .padding(12.0)
+        .px(16.0)
+        .center()
+        .radius(radius)
+        .fill(fill)
+        .border(1.0, border)
+        .hover(hover)
+        .press(press)
+        .focus_ring(2.0, 2.0, p.ink.alpha(0.65))
+        .child(
+            text("Create a workspace to get started")
+                .key(label_key)
+                .font(p.label)
+                .color(ink)
+                .wrap(),
+        )
+}
+
 fn empty_workspaces(state: &State, p: &Palette, cx: &Cx<State>) -> El {
     // Small, fixed-size characters make this an illustration, not UI typography.
     // Only shrink it to fit smaller panes; never apply the user's font settings.
@@ -475,35 +557,20 @@ fn empty_workspaces(state: &State, p: &Palette, cx: &Cx<State>) -> El {
                 ),
         )
         .child(
-            col()
-                .key("empty-workspaces-create")
-                .role("button")
-                .label("Create a workspace to get started")
-                .focusable(true)
-                .disabled(!state.ready())
-                .max_w(available_width)
-                .padding(12.0)
-                .px(16.0)
-                .center()
-                .radius(6.0)
-                .fill(p.accent.alpha(0.12))
-                .border(1.0, p.accent.alpha(0.25))
-                .hover(p.accent.alpha(0.18))
-                .press(p.accent.alpha(0.24))
-                .focus_ring(2.0, 2.0, p.accent)
-                .on_press_tx(|s: &mut State, tx| {
-                    s.change(Command::CreateWorkspace {
-                        name: String::new(),
-                    });
-                    tx.blur();
-                })
-                .child(
-                    text("Create a workspace to get started")
-                        .key("empty-workspaces-message")
-                        .font(p.label)
-                        .color(p.ink)
-                        .wrap(),
-                ),
+            workspace_button(
+                "empty-workspaces-create",
+                state.settings.workspace_button_style,
+                p,
+                "empty-workspaces-message",
+            )
+            .disabled(!state.ready())
+            .max_w(available_width)
+            .on_press_tx(|s: &mut State, tx| {
+                s.change(Command::CreateWorkspace {
+                    name: String::new(),
+                });
+                tx.blur();
+            }),
         )
 }
 
@@ -512,13 +579,13 @@ fn dialog(state: &State, p: &Palette) -> Option<El> {
     let (title, hint, submit, placeholder) = match dialog {
         Dialog::NewWorkspace => (
             "New workspace",
-            "Name is optional. Leave it blank to use the current terminal directory (e.g. ~/code). The new workspace starts there.".to_owned(),
+            "Name is optional. Leave it blank to follow the selected terminal’s current directory (e.g. griz). Hover the workspace to see its full path. The new workspace starts in the current directory.".to_owned(),
             "Create workspace",
             "Optional name",
         ),
         Dialog::RenameWorkspace(_) => (
             "Rename workspace",
-            "Leave blank to use this workspace’s selected terminal directory (e.g. ~/code). Renaming does not move its terminals.".to_owned(),
+            "Leave blank to follow this workspace’s selected terminal directory automatically. The label updates as you cd or switch tabs; hover it to see the full path. A custom name stays fixed. Renaming does not move its terminals.".to_owned(),
             "Rename",
             "Optional name",
         ),

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 pub const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 pub const MAX_INPUT: usize = 256 * 1024;
 pub const MAX_COLS: u16 = 300;
@@ -51,7 +51,14 @@ pub struct TerminalInfo {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceInfo {
     pub id: WorkspaceId,
+    /// Display label: a custom name, or the selected terminal's directory basename.
     pub name: String,
+    /// None means the name follows this client's selected terminal automatically.
+    #[serde(default)]
+    pub custom_name: Option<String>,
+    /// Selected terminal's full directory for display, abbreviating HOME with ~.
+    #[serde(default)]
+    pub directory: String,
     pub terminals: Vec<TerminalInfo>,
 }
 

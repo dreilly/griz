@@ -347,9 +347,9 @@ impl State {
                 .snapshot
                 .as_ref()
                 .and_then(|s| s.workspaces.iter().find(|w| w.id == *id))
-                .map(|w| w.name.as_str())
+                .and_then(|w| w.custom_name.as_deref())
                 .unwrap_or(""),
-            // Blank means the service default; a workspace has no directory of its own.
+            // Other dialogs start blank; the core resolves their directory defaults.
             _ => "",
         };
         self.draft = TextEdit::new(value);
@@ -543,6 +543,10 @@ fn main() {
     let spec: AppSpec<State> = AppSpec {
         scenes: &[
             ("settings", |s| s.settings_open = true),
+            ("buttons", |s| {
+                s.settings_open = true;
+                s.settings_page = settings_ui::Page::Buttons;
+            }),
             ("shortcuts", |s| {
                 s.settings_open = true;
                 s.settings_page = settings_ui::Page::Shortcuts;

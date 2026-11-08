@@ -1,5 +1,5 @@
 use super::*;
-use crate::settings::{Action, Font, Settings, Theme};
+use crate::settings::{Action, Font, Settings, Theme, WorkspaceButtonStyle};
 use rune::{Chord, Key, Mods, prefs::Prefs};
 
 fn primary(key: Key) -> KeyEvent {
@@ -81,6 +81,119 @@ fn appearance_is_live_reflows_the_pty_and_can_be_reset() {
     assert_eq!(rt.state.settings.font, Font::Menlo);
     assert_eq!(rt.state.settings.theme, Theme::Dark);
     assert_eq!(rt.state.grid, original_grid);
+}
+
+#[test]
+fn workspace_button_gallery_selects_saves_and_applies_styles_without_creating_workspaces() {
+    let (mut state, outgoing) = mock();
+    let mut empty = snapshot();
+    empty.workspaces.clear();
+    empty.active_workspace = 0;
+    empty.active_terminal = None;
+    empty.terminal = None;
+    state.apply(empty);
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    click(&mut rt, "open-settings");
+    click(&mut rt, "settings-buttons");
+    commands(&outgoing);
+    for style in WorkspaceButtonStyle::ALL {
+        let key = format!("button-style-{}", style.id());
+        assert!(rt.find(&key).is_some());
+        rt.update(|_, tx| {
+            tx.scroll_into_view(&key);
+            tx.instant();
+        });
+        rt.frame(0.0);
+        click(&mut rt, &key);
+        assert_eq!(rt.state.settings.workspace_button_style, style);
+        assert_eq!(
+            Settings::from_store(&rt.state.prefs)
+                .0
+                .workspace_button_style,
+            style
+        );
+        assert!(rt.state.dialog.is_none());
+        assert!(
+            commands(&outgoing).is_empty(),
+            "samples must not create terminals or workspaces"
+        );
+        let elements = rt.elements();
+        let live = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some("empty-workspaces-create"))
+            .unwrap();
+        let sample = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some(key.as_str()))
+            .unwrap();
+        assert_eq!(
+            live.fill, sample.fill,
+            "the sample must match the actual button"
+        );
+    }
+    rt.update(|_, tx| {
+        tx.scroll_into_view("settings-buttons-reset");
+        tx.instant();
+    });
+    rt.frame(0.0);
+    click(&mut rt, "settings-buttons-reset");
+    assert_eq!(
+        rt.state.settings.workspace_button_style,
+        WorkspaceButtonStyle::Soft
+    );
+    assert_eq!(
+        Settings::from_store(&rt.state.prefs)
+            .0
+            .workspace_button_style,
+        WorkspaceButtonStyle::Soft
+    );
+    assert!(commands(&outgoing).is_empty());
+}
+
+#[test]
+fn workspace_button_gallery_is_usable_disconnected_and_in_a_small_window() {
+    let mut rt = make_runtime(State::default(), (640.0, 420.0));
+    click(&mut rt, "open-settings");
+    click(&mut rt, "settings-buttons");
+    for font_size in [14.0, 28.0] {
+        rt.update(|s, _| s.settings.font_size = font_size);
+        for _ in 0..60 {
+            rt.frame(1.0 / 60.0);
+        }
+        for style in WorkspaceButtonStyle::ALL {
+            let key = format!("button-style-{}", style.id());
+            rt.update(|_, tx| {
+                tx.scroll_into_view(&key);
+                tx.instant();
+            });
+            rt.frame(0.0);
+            let ([x, _, width, _], _) = rt.presented(&key).unwrap();
+            let ([cx, _, cw, _], _) = rt.presented("settings-content").unwrap();
+            assert!(
+                x >= cx && x + width <= cx + cw,
+                "sample must not overflow horizontally"
+            );
+            click(&mut rt, &key);
+            assert_eq!(rt.state.settings.workspace_button_style, style);
+        }
+    }
+    assert!(!rt.state.online);
+    assert!(rt.state.dialog.is_none());
+}
+
+#[test]
+fn every_workspace_button_style_round_trips_without_affecting_other_preferences() {
+    let mut prefs = Prefs::memory();
+    for style in WorkspaceButtonStyle::ALL {
+        let mut settings = Settings::default();
+        settings.workspace_button_style = style;
+        settings.font_size = 18.0;
+        settings.save(&mut prefs).unwrap();
+        let (loaded, warning) = Settings::from_store(&prefs);
+        assert!(warning.is_none());
+        assert_eq!(loaded.workspace_button_style, style);
+        assert_eq!(loaded.font_size, 18.0);
+    }
 }
 
 #[test]
@@ -181,6 +294,7 @@ fn preferences_round_trip_with_disabled_bindings_and_missing_defaults() {
     settings.font = Font::Monaco;
     settings.font_size = 19.0;
     settings.theme = Theme::Midnight;
+    settings.workspace_button_style = WorkspaceButtonStyle::Outline;
     settings
         .bind(Action::ToggleSidebar, Some(Chord::parse("mod+j").unwrap()))
         .unwrap();
@@ -191,6 +305,7 @@ fn preferences_round_trip_with_disabled_bindings_and_missing_defaults() {
     assert_eq!(loaded.font, Font::Monaco);
     assert_eq!(loaded.font_size, 19.0);
     assert_eq!(loaded.theme, Theme::Midnight);
+    assert_eq!(loaded.workspace_button_style, WorkspaceButtonStyle::Outline);
     assert_eq!(
         loaded.chord(Action::ToggleSidebar),
         Some(Chord::parse("mod+j").unwrap())
@@ -213,6 +328,7 @@ fn malformed_or_invalid_preferences_fall_back_without_panicking() {
                 "font_size": 999,
                 "font": "not installed",
                 "theme": 42,
+                "workspace_button_style": "unknown",
                 "keybindings": { "sidebar.toggle": "mod+t", "terminal.new": "nonsense key" }
             }),
         )
@@ -222,11 +338,13 @@ fn malformed_or_invalid_preferences_fall_back_without_panicking() {
     assert_eq!(settings.font_size, 14.0);
     assert_eq!(settings.font, Font::Menlo);
     assert_eq!(settings.theme, Theme::Dark);
+    assert_eq!(settings.workspace_button_style, WorkspaceButtonStyle::Soft);
     prefs
         .set("settings", &serde_json::json!({"font_size": 16}))
         .unwrap();
     let (settings, warning) = Settings::from_store(&prefs);
     assert_eq!(settings.font_size, 16.0);
+    assert_eq!(settings.workspace_button_style, WorkspaceButtonStyle::Soft);
     assert!(warning.is_none());
 }
 

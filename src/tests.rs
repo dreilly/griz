@@ -2,6 +2,8 @@
 mod font_and_close;
 #[path = "tests/settings.rs"]
 mod settings_tests;
+#[path = "tests/workspace_labels.rs"]
+mod workspace_labels;
 
 use super::*;
 use griz_protocol::{Request, TerminalFrame, TerminalInfo, WorkspaceInfo};
@@ -25,11 +27,15 @@ fn snapshot() -> ViewState {
             WorkspaceInfo {
                 id: 1,
                 name: "Daily".into(),
+                custom_name: Some("Daily".into()),
+                directory: "/tmp".into(),
                 terminals: vec![info(1), info(2)],
             },
             WorkspaceInfo {
                 id: 2,
                 name: "Other".into(),
+                custom_name: Some("Other".into()),
+                directory: "/tmp".into(),
                 terminals: vec![info(3)],
             },
         ],

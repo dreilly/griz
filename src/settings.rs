@@ -49,6 +49,50 @@ impl Theme {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkspaceButtonStyle {
+    #[default]
+    Soft,
+    Outline,
+    Solid,
+    Ghost,
+    Pill,
+    Accent,
+}
+
+impl WorkspaceButtonStyle {
+    pub const ALL: [Self; 6] = [
+        Self::Soft,
+        Self::Outline,
+        Self::Solid,
+        Self::Ghost,
+        Self::Pill,
+        Self::Accent,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Soft => "soft",
+            Self::Outline => "outline",
+            Self::Solid => "solid",
+            Self::Ghost => "ghost",
+            Self::Pill => "pill",
+            Self::Accent => "accent",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Soft => "Soft",
+            Self::Outline => "Outline",
+            Self::Solid => "Solid",
+            Self::Ghost => "Ghost",
+            Self::Pill => "Pill",
+            Self::Accent => "Accent",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     NewTerminal,
@@ -119,6 +163,7 @@ pub struct Settings {
     pub font: Font,
     pub font_size: f32,
     pub theme: Theme,
+    pub workspace_button_style: WorkspaceButtonStyle,
     /// Missing means the default; an empty string explicitly disables a shortcut.
     bindings: BTreeMap<String, String>,
 }
@@ -129,6 +174,7 @@ impl Default for Settings {
             font: Font::default(),
             font_size: 14.0,
             theme: Theme::default(),
+            workspace_button_style: WorkspaceButtonStyle::default(),
             bindings: BTreeMap::new(),
         }
     }
@@ -197,6 +243,17 @@ impl Settings {
                 invalid = true;
             }
         }
+        if let Some(value) = values.get("workspace_button_style") {
+            if let Some(style) = value.as_str().and_then(|id| {
+                WorkspaceButtonStyle::ALL
+                    .into_iter()
+                    .find(|style| style.id() == id)
+            }) {
+                settings.workspace_button_style = style;
+            } else {
+                invalid = true;
+            }
+        }
         if let Some(value) = values.get("keybindings") {
             if let Ok(bindings) = serde_json::from_value::<BTreeMap<String, String>>(value.clone())
             {
@@ -238,6 +295,10 @@ impl Settings {
         value.insert("font".into(), self.font.name().into());
         value.insert("font_size".into(), self.font_size.into());
         value.insert("theme".into(), self.theme.name().into());
+        value.insert(
+            "workspace_button_style".into(),
+            self.workspace_button_style.id().into(),
+        );
         value.insert(
             "keybindings".into(),
             serde_json::to_value(&self.bindings).unwrap(),

@@ -31,7 +31,7 @@ For a standalone checkout later, replace the Rune path dependency with a pinned 
 
 ### Updating from an older version
 
-Workspace closing uses **protocol v4**. Rebuilding does not replace a running
+Live workspace labels use **protocol v5**. Rebuilding does not replace a running
 service. The old and new versions cannot attach to each other; a version mismatch
 is reported rather than silently replacing live shells.
 
@@ -63,15 +63,21 @@ A workspace is a **collection of terminals**, not a project or directory. For ex
 “Daily” can contain a frontend shell, backend logs, a dotfiles editor, an SSH
 connection, and a scratch shell, all in unrelated directories.
 
-- The service starts with one workspace and terminal, using its starting directory
-  as the workspace name (for example, `~/code/griz`).
+- The service starts with one workspace and terminal. Its automatic label shows
+  the current directory's basename (for example, `griz` in `~/code/griz`).
 - Click **+** beside Workspaces to create a workspace with its first terminal.
-  The name is optional: blank or whitespace uses the selected shell’s **current**
-  directory, including any `cd` commands. The first terminal starts there too.
-  With no selected terminal, the service’s starting directory is used.
-- Directory names use `~` for your home directory and `~/…` for paths beneath it.
-  Paths outside your home directory remain absolute. A directory-based name is
-  chosen when you create or rename the workspace; later `cd` commands do not rename it.
+  The name is optional: blank or whitespace follows the selected terminal's
+  **current** directory automatically. The first terminal starts in the current
+  shell directory. With no selected terminal, the service’s starting directory is used.
+- Automatic labels update as you `cd` or switch tabs. The home directory is `~`
+  and the filesystem root is `/`. Hover a workspace to see its full directory path:
+  `~/…` within your home directory, absolute elsewhere. Custom names stay fixed,
+  but their hover path still updates. Clear a workspace's name through **Rename**
+  to restore automatic tracking. Each window follows its own selected tab,
+  including its remembered selection in inactive workspaces.
+- The service checks live shell directories about every 250 ms while clients are
+  attached; prompt hooks and OSC 7 are not required. Exited shells retain their last
+  known directory. No directory polling runs without clients or workspaces.
 - Click a workspace in the sidebar to switch. Your selected tab is remembered for
   each workspace on that connection.
 - Click **+ Terminal** to open another independent shell. Its optional absolute
@@ -148,6 +154,10 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   the app, including Settings and text fields (**⌘=** also increases size).
   Themes change the interface
   and terminal base background; applications' explicit ANSI colors are preserved.
+- **Buttons:** preview the empty-state workspace button in Soft, Outline, Solid,
+  Ghost, Pill, or Accent styles. Click a sample to select and save it without creating
+  a workspace. Soft is the neutral default; only Accent uses the green tint.
+  Samples include the real hover/press/focus behavior and match the actual button.
 - **Shortcuts:** search actions, click a binding, then press a new combination.
   Conflicts are rejected; **Clear** disables a binding and **Reset** restores its
   default. Escape cancels recording before dismissing Settings. Shortcuts require
@@ -251,7 +261,7 @@ selection acknowledgements are pending, empty workspaces, and ended-shell recove
 Other tests exercise libghostty's colors/cursor/Unicode/alternate screen/query
 responses and Rune's cell placement.
 
-For an offline GUI capture, save a protocol v4 **`view` event** (including its catalog
+For an offline GUI capture, save a protocol v5 **`view` event** (including its catalog
 and selected terminal) into a JSON file:
 
 ```sh

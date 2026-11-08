@@ -1,6 +1,6 @@
 use crate::clients::Outbox;
 use crate::session::Session;
-use crate::validation::{validate_cwd, workspace_name};
+use crate::validation::{directory_label, directory_path, validate_cwd, workspace_name};
 use crate::{ClientId, Message};
 use griz_protocol::{
     Command, Event, MAX_INPUT, MAX_TERMINALS, MAX_WORKSPACES, Screen, TerminalFrame, TerminalId,
@@ -13,6 +13,7 @@ use std::sync::{Arc, mpsc::Receiver, mpsc::RecvTimeoutError, mpsc::SyncSender};
 use std::time::{Duration, Instant};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const DIRECTORY_INTERVAL: Duration = Duration::from_millis(250);
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -21,6 +22,7 @@ struct TerminalRecord {
     id: TerminalId,
     label: String,
     initial_cwd: PathBuf,
+    current_cwd: PathBuf,
     generation: u64,
     grid: (u16, u16),
     vt: Terminal,
@@ -43,6 +45,7 @@ impl TerminalRecord {
         Ok(Self {
             id,
             label,
+            current_cwd: cwd.clone(),
             initial_cwd: cwd,
             generation,
             grid,
@@ -65,7 +68,7 @@ impl TerminalRecord {
 
 struct Workspace {
     id: WorkspaceId,
-    name: String,
+    custom_name: Option<String>,
     terminals: Vec<TerminalRecord>,
     next_terminal_number: usize,
 }
@@ -107,14 +110,13 @@ impl Service {
             &shell,
             tx.clone(),
         )?;
-        let name = workspace_name("", &default_cwd)?;
         Ok(Self {
             shell,
             default_cwd,
             tx,
             workspaces: vec![Workspace {
                 id: 1,
-                name,
+                custom_name: None,
                 terminals: vec![terminal],
                 next_terminal_number: 2,
             }],
@@ -127,6 +129,7 @@ impl Service {
     }
 
     pub fn run(&mut self, rx: Receiver<Message>) -> Result<()> {
+        let mut directory_deadline = Instant::now();
         let result = (|| {
             loop {
                 // A continuously full PTY queue must not starve the publication timer.
@@ -136,13 +139,25 @@ impl Service {
                 {
                     self.flush_dirty()?;
                 }
-                let message = if let Some(deadline) = self.frame_deadline {
+                // Shells need not print a prompt (or use OSC 7) after changing directory.
+                // Poll independently of PTY output, but sleep indefinitely without clients
+                // or workspaces. Check here so continuous output cannot starve updates.
+                let watch_directories = !self.clients.is_empty() && !self.workspaces.is_empty();
+                if watch_directories && Instant::now() >= directory_deadline {
+                    directory_deadline = Instant::now() + DIRECTORY_INTERVAL;
+                    if self.refresh_directories() {
+                        self.publish_all()?;
+                    }
+                }
+                let deadline = self
+                    .frame_deadline
+                    .into_iter()
+                    .chain(watch_directories.then_some(directory_deadline))
+                    .min();
+                let message = if let Some(deadline) = deadline {
                     match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                         Ok(message) => message,
-                        Err(RecvTimeoutError::Timeout) => {
-                            self.flush_dirty()?;
-                            continue;
-                        }
+                        Err(RecvTimeoutError::Timeout) => continue,
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
                 } else {
@@ -260,16 +275,25 @@ impl Service {
         client.ack = serial;
         let outbox = client.outbox.clone();
 
-        match self.apply_command(client_id, command) {
-            Ok(Outcome::Requester) => self.publish_views(&[client_id]),
-            Ok(Outcome::Catalog) => {
+        // Selection/name changes should use a fresh cwd immediately, not wait for
+        // the next poll. Do not perform process queries on every keystroke or resize.
+        let refresh = !matches!(&command, Command::Input { .. } | Command::Resize { .. });
+        let outcome = self.apply_command(client_id, command);
+        let directories_changed = refresh && self.refresh_directories();
+        match outcome {
+            Ok(Outcome::Requester) if !directories_changed => self.publish_views(&[client_id]),
+            Ok(_) => {
                 self.dirty.clear();
                 self.frame_deadline = None;
                 self.publish_all()
             }
             Err(message) => {
                 outbox.error(Some(serial), message);
-                self.publish_views(&[client_id])
+                if directories_changed {
+                    self.publish_all()
+                } else {
+                    self.publish_views(&[client_id])
+                }
             }
         }
     }
@@ -287,8 +311,7 @@ impl Service {
                     .iter()
                     .position(|workspace| workspace.id == workspace_id)
                     .ok_or_else(|| format!("unknown workspace {workspace_id}"))?;
-                let cwd = self.workspace_cwd(client_id, workspace_id);
-                self.workspaces[index].name = workspace_name(&name, &cwd)?;
+                self.workspaces[index].custom_name = workspace_name(&name)?;
                 Ok(Outcome::Catalog)
             }
             Command::CloseWorkspace { workspace_id } => self.close_workspace(workspace_id),
@@ -382,7 +405,7 @@ impl Service {
             return Err(format!("terminal limit ({MAX_TERMINALS}) reached"));
         }
         let cwd = self.workspace_cwd(client_id, self.clients[&client_id].active_workspace);
-        let name = workspace_name(&name, &cwd)?;
+        let custom_name = workspace_name(&name)?;
         let workspace_id = self.take_workspace_id();
         let terminal_id = self.take_terminal_id();
         let grid = self.clients[&client_id].dimensions.unwrap_or(DEFAULT_SIZE);
@@ -398,7 +421,7 @@ impl Service {
         .map_err(|error| format!("cannot create workspace: {error}"))?;
         self.workspaces.push(Workspace {
             id: workspace_id,
-            name,
+            custom_name,
             terminals: vec![terminal],
             next_terminal_number: 2,
         });
@@ -643,7 +666,6 @@ impl Service {
     }
 
     fn publish_views(&mut self, client_ids: &[ClientId]) -> Result<()> {
-        let catalog = self.catalog();
         let specs = client_ids
             .iter()
             .filter_map(|client_id| {
@@ -675,7 +697,7 @@ impl Service {
                 screens.insert(terminal_id, screen);
             }
         }
-        for (_, active_workspace, active_terminal, ack, outbox) in specs {
+        for (client_id, active_workspace, active_terminal, ack, outbox) in specs {
             let terminal = active_terminal.and_then(|terminal_id| {
                 let (workspace_index, terminal_index) = self.terminal_location(terminal_id)?;
                 let record = &self.workspaces[workspace_index].terminals[terminal_index];
@@ -691,7 +713,7 @@ impl Service {
                     core_pid: std::process::id(),
                     default_cwd: self.default_cwd.to_string_lossy().into_owned(),
                     ack,
-                    workspaces: catalog.clone(),
+                    workspaces: self.catalog(client_id),
                     active_workspace,
                     active_terminal,
                     terminal,
@@ -701,19 +723,60 @@ impl Service {
         Ok(())
     }
 
-    fn catalog(&self) -> Vec<WorkspaceInfo> {
+    fn catalog(&self, client_id: ClientId) -> Vec<WorkspaceInfo> {
         self.workspaces
             .iter()
-            .map(|workspace| WorkspaceInfo {
-                id: workspace.id,
-                name: workspace.name.clone(),
-                terminals: workspace
-                    .terminals
-                    .iter()
-                    .map(TerminalRecord::info)
-                    .collect(),
+            .map(|workspace| {
+                // Selection is per client, including remembered tabs in inactive workspaces.
+                let terminal = self.clients[&client_id]
+                    .selected
+                    .get(&workspace.id)
+                    .copied()
+                    .flatten()
+                    .and_then(|id| {
+                        workspace
+                            .terminals
+                            .iter()
+                            .find(|terminal| terminal.id == id)
+                    });
+                let cwd = terminal.map_or(self.default_cwd.as_path(), |terminal| {
+                    terminal.current_cwd.as_path()
+                });
+                WorkspaceInfo {
+                    id: workspace.id,
+                    name: workspace
+                        .custom_name
+                        .clone()
+                        .unwrap_or_else(|| directory_label(cwd)),
+                    custom_name: workspace.custom_name.clone(),
+                    directory: directory_path(cwd),
+                    terminals: workspace
+                        .terminals
+                        .iter()
+                        .map(TerminalRecord::info)
+                        .collect(),
+                }
             })
             .collect()
+    }
+
+    fn refresh_directories(&mut self) -> bool {
+        let mut changed = false;
+        for terminal in self
+            .workspaces
+            .iter_mut()
+            .flat_map(|workspace| &mut workspace.terminals)
+        {
+            if terminal.exited.is_none()
+                && let Some(cwd) = terminal.session.cwd().filter(|path| path.is_absolute())
+                && cwd != terminal.current_cwd
+            {
+                terminal.current_cwd = cwd;
+                changed = true;
+            }
+        }
+        // Keep the last known path when a process exits or its cwd cannot be read.
+        changed
     }
 
     fn workspace_cwd(&self, client_id: ClientId, workspace_id: WorkspaceId) -> PathBuf {
@@ -732,9 +795,9 @@ impl Service {
                     .filter(|path| path.is_dir())
                     .or_else(|| {
                         terminal
-                            .initial_cwd
+                            .current_cwd
                             .is_dir()
-                            .then(|| terminal.initial_cwd.clone())
+                            .then(|| terminal.current_cwd.clone())
                     })
             })
             .unwrap_or_else(|| self.default_cwd.clone())

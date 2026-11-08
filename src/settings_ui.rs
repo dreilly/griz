@@ -1,8 +1,8 @@
 //! Settings presentation; the typed model and persistence stay in settings.rs.
 use crate::{
     State,
-    settings::{self, Action, Font, Settings, Theme},
-    ui::{Palette, button},
+    settings::{self, Action, Font, Settings, Theme, WorkspaceButtonStyle},
+    ui::{Palette, button, workspace_button},
 };
 use rune::{Color, El, Key, KeyEvent, TextStyle, Tx, col, el, row, text, text_input};
 
@@ -10,6 +10,7 @@ use rune::{Color, El, Key, KeyEvent, TextStyle, Tx, col, el, row, text, text_inp
 pub enum Page {
     #[default]
     Appearance,
+    Buttons,
     Shortcuts,
 }
 
@@ -156,9 +157,66 @@ fn appearance(state: &State, p: &Palette) -> El {
                 s.settings.font = defaults.font;
                 s.settings.font_size = defaults.font_size;
                 s.settings.theme = defaults.theme;
+                s.settings.workspace_button_style = defaults.workspace_button_style;
                 s.settings_changed();
             }),
         )
+}
+
+fn buttons(state: &State, p: &Palette) -> El {
+    let mut samples = row().w_full().flex_wrap().gap(12.0);
+    for style in WorkspaceButtonStyle::ALL {
+        let selected = state.settings.workspace_button_style == style;
+        samples = samples.child(
+            col()
+                .key(format!("button-style-card-{}", style.id()))
+                .w(230.0)
+                .grow(1.0)
+                .min_w(230.0)
+                .padding(12.0)
+                .gap(12.0)
+                .radius(8.0)
+                .border(1.0, if selected { p.ink.alpha(0.45) } else { p.line })
+                .child(
+                    row()
+                        .w_full()
+                        .center_y()
+                        .child(text(style.name()).font(p.label).color(p.ink))
+                        .child(el().grow(1.0))
+                        .child(
+                            text(if selected { "Selected" } else { "" })
+                                .font(p.label)
+                                .color(p.muted),
+                        ),
+                )
+                .child(
+                    workspace_button(
+                        format!("button-style-{}", style.id()),
+                        style,
+                        p,
+                        format!("button-style-label-{}", style.id()),
+                    )
+                    .w_full()
+                    .label(format!("Use {} workspace button style", style.name()))
+                    .on_press(move |s: &mut State| {
+                        s.settings.workspace_button_style = style;
+                        s.settings_changed();
+                    }),
+                ),
+        );
+    }
+    col().w_full().gap(18.0)
+        .child(heading(
+            "Workspace button styles",
+            "Click a sample to select and save its style. Samples never create a workspace. All but Accent are neutral.",
+            p,
+        ))
+        .child(samples)
+        .child(button("settings-buttons-reset", "Restore default button style", p)
+            .on_press(|s: &mut State| {
+                s.settings.workspace_button_style = WorkspaceButtonStyle::default();
+                s.settings_changed();
+            }))
 }
 
 fn shortcuts(state: &State, p: &Palette) -> El {
@@ -246,6 +304,7 @@ pub fn panel(state: &State, p: &Palette) -> Option<El> {
         .pr(12.0);
     for (page, key, label) in [
         (Page::Appearance, "settings-appearance", "Appearance"),
+        (Page::Buttons, "settings-buttons", "Buttons"),
         (Page::Shortcuts, "settings-shortcuts", "Shortcuts"),
     ] {
         navigation = navigation.child(
@@ -265,6 +324,7 @@ pub fn panel(state: &State, p: &Palette) -> Option<El> {
     }
     let content = match state.settings_page {
         Page::Appearance => appearance(state, p),
+        Page::Buttons => buttons(state, p),
         Page::Shortcuts => shortcuts(state, p),
     };
     Some(el().key("settings-scrim")

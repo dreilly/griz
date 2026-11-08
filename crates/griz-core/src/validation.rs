@@ -1,11 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn workspace_name(name: &str, cwd: &Path) -> Result<String, String> {
+pub fn workspace_name(name: &str) -> Result<Option<String>, String> {
     let name = name.trim();
     if name.is_empty() {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        return Ok(directory_name(cwd, home.as_deref()));
+        return Ok(None);
     }
     let length = name.chars().count();
     if length > 80 {
@@ -14,7 +13,26 @@ pub fn workspace_name(name: &str, cwd: &Path) -> Result<String, String> {
     if name.chars().any(char::is_control) {
         return Err("workspace name cannot contain control characters".into());
     }
-    Ok(name.to_owned())
+    Ok(Some(name.to_owned()))
+}
+
+pub fn directory_label(cwd: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    directory_basename(cwd, home.as_deref())
+}
+
+fn directory_basename(cwd: &Path, home: Option<&Path>) -> String {
+    if home == Some(cwd) {
+        return "~".into();
+    }
+    cwd.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| cwd.to_string_lossy().into_owned())
+}
+
+pub fn directory_path(cwd: &Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    directory_name(cwd, home.as_deref())
 }
 
 /// Only abbreviate a real home-directory prefix, not a similarly named sibling.
@@ -75,17 +93,37 @@ mod tests {
 
     #[test]
     fn workspace_names_are_optional_but_custom_names_are_still_validated() {
-        let cwd = Path::new("/opt/project");
-        assert_eq!(workspace_name("", cwd).unwrap(), "/opt/project");
-        assert_eq!(workspace_name("   ", cwd).unwrap(), "/opt/project");
+        assert_eq!(workspace_name("").unwrap(), None);
+        assert_eq!(workspace_name("   ").unwrap(), None);
         assert_eq!(
-            workspace_name("  My workspace  ", cwd).unwrap(),
-            "My workspace"
+            workspace_name("  My workspace  ").unwrap(),
+            Some("My workspace".into())
         );
-        assert!(workspace_name(&"x".repeat(81), cwd).is_err());
-        assert!(workspace_name("bad\u{7}name", cwd).is_err());
-        // Directory labels are not restricted by the custom-name length limit.
-        let long = PathBuf::from(format!("/opt/{}", "x".repeat(100)));
-        assert_eq!(workspace_name("", &long).unwrap(), long.to_string_lossy());
+        assert!(workspace_name(&"x".repeat(81)).is_err());
+        assert!(workspace_name("bad\u{7}name").is_err());
+    }
+
+    #[test]
+    fn directory_labels_show_only_the_basename_with_home_and_root_special_cases() {
+        let home = Some(Path::new("/Users/daniel"));
+        for (path, label) in [
+            ("/Users/daniel", "~"),
+            ("/Users/daniel/code/griz", "griz"),
+            ("/opt/code/", "code"),
+            ("/", "/"),
+            ("/opt/my project/日本語", "日本語"),
+        ] {
+            assert_eq!(directory_basename(Path::new(path), home), label);
+        }
+        assert_eq!(
+            directory_basename(Path::new("/opt/project"), None),
+            "project"
+        );
+        // Automatic labels are not restricted by the custom-name length limit.
+        let long_name = "x".repeat(100);
+        assert_eq!(
+            directory_label(&PathBuf::from(format!("/opt/{long_name}"))),
+            long_name
+        );
     }
 }
