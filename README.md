@@ -78,11 +78,12 @@ connection, and a scratch shell, all in unrelated directories.
   starting directory applies only to that terminal. Blank uses the service's
   launch directory. You can also `cd` independently in any shell.
 - Click tabs to switch layouts; click a pane's header or terminal area to focus it.
-  Use **↔** in the tab bar or **⌘D** to split vertically (left/right), and **↕** or
-  **⇧⌘D** to split horizontally (top/bottom). Splits divide the focused pane equally
-  and can be nested, up to eight panes per tab. Each pane has its own rounded frame,
-  separated by a 10-point gap. The new shell inherits the focused shell's current
-  directory. All visible panes update independently, including unfocused ones.
+  Each pane's header has always-visible **↔**, **↕**, and **×** controls. Use **↔**
+  to split that pane vertically (left/right), or **↕** to split it horizontally
+  (top/bottom). **⌘D** and **⇧⌘D** split the focused pane. Splits divide the target
+  pane equally and can be nested, up to eight panes per tab. Each pane has its own
+  rounded frame, separated by a 10-point gap. The new shell inherits the target
+  shell's current directory. All visible panes update independently, including unfocused ones.
   **⌥⌘→ / ⌥⌘←** cycle pane focus within the current tab. Split ratios are fixed at
   50/50 for now; draggable dividers are not implemented.
 - Right-click any workspace for **Rename workspace…**,
@@ -102,7 +103,7 @@ connection, and a scratch shell, all in unrelated directories.
   and immediately creates a workspace with its directory-based default name, even
   with the sidebar hidden.
 - The tab's **×** closes its focused terminal (or its first pane in an inactive tab).
-  Split panes also have their own **×** in the header. Closing immediately ends only
+  Every pane also has its own **×** in the header. Closing immediately ends only
   that terminal's shell and foreground job, without a confirmation dialog. The remaining
   panes expand into the freed space. Closing a tab's final pane removes the tab.
   **Only closing the final terminal in a workspace asks for confirmation**, using a

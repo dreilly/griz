@@ -124,7 +124,7 @@ fn clicking_a_pane_gates_typing_until_ack_then_routes_only_to_that_shell() {
 }
 
 #[test]
-fn split_toolbar_and_shortcuts_are_addressed_and_do_not_type_into_shell() {
+fn pane_split_controls_and_shortcuts_are_addressed_and_do_not_type_into_shell() {
     for (key, direction) in [
         ("split-horizontal", SplitDirection::Horizontal),
         ("split-vertical", SplitDirection::Vertical),
@@ -154,6 +154,176 @@ fn split_toolbar_and_shortcuts_are_addressed_and_do_not_type_into_shell() {
         }
     )));
     assert!(!sent.iter().any(|(_, c)| matches!(c, Command::Input { .. })));
+}
+
+#[test]
+fn pane_controls_are_always_visible_inside_each_header() {
+    let single = runtime((1100.0, 720.0));
+    let (split, _) = split_runtime(SplitDirection::Vertical);
+    for (rt, suffixes) in [(&single, vec![""]), (&split, vec!["-1", "-2"])] {
+        for suffix in suffixes {
+            let ([hx, hy, hw, hh], _) = rt.presented(&format!("terminal-header{suffix}")).unwrap();
+            for control in ["split-vertical", "split-horizontal", "close-pane"] {
+                let key = format!("{control}{suffix}");
+                let ([x, y, w, h], _) = rt.presented(&key).unwrap();
+                assert!(
+                    x >= hx && x + w <= hx + hw,
+                    "{key} outside header horizontally"
+                );
+                assert!(
+                    y >= hy && y + h <= hy + hh,
+                    "{key} outside header vertically"
+                );
+                let elements = rt.elements();
+                let element = elements
+                    .iter()
+                    .find(|e| e.key.as_deref() == Some(&key))
+                    .unwrap();
+                assert_eq!(element.opacity, 1.0, "{key} should not require hover");
+                assert!(element.visible[2] > 0.0 && element.visible[3] > 0.0);
+            }
+        }
+    }
+    assert!(split.find("split-vertical").is_none());
+    assert!(split.find("split-horizontal").is_none());
+}
+
+#[test]
+fn splitting_an_inactive_pane_queues_selection_and_waits_for_the_split_ack() {
+    for (key, direction) in [
+        ("split-horizontal-2", SplitDirection::Horizontal),
+        ("split-vertical-2", SplitDirection::Vertical),
+    ] {
+        let (mut rt, outgoing) = split_runtime(SplitDirection::Vertical);
+        commands(&outgoing);
+        click(&mut rt, key);
+        let sent = commands(&outgoing);
+        assert_eq!(sent.len(), 2);
+        assert!(matches!(
+            sent[0].1,
+            Command::SelectTerminal { terminal_id: 2 }
+        ));
+        assert!(
+            matches!(sent[1].1, Command::SplitTerminal { terminal_id: 2, direction: d } if d == direction)
+        );
+        assert_eq!(rt.state.pending, Some(sent[1].0));
+        let mut intermediate = split_snapshot(SplitDirection::Vertical);
+        intermediate.ack = sent[0].0;
+        intermediate.active_terminal = Some(2);
+        intermediate.terminal = Some(intermediate.terminals[1].clone());
+        rt.update(|s, _| s.apply(intermediate));
+        rt.frame(0.0);
+        assert_eq!(rt.state.active_terminal(), Some(1));
+        assert_eq!(rt.state.pending, Some(sent[1].0));
+        rt.key(rune::Key::Text("blocked".into()).into());
+        rt.frame(0.0);
+        assert!(commands(&outgoing).is_empty());
+    }
+}
+
+#[test]
+fn original_pane_can_be_split_repeatedly_after_each_new_pane_takes_focus() {
+    fn add_split(node: &mut PaneLayout, new_id: TerminalId, direction: SplitDirection) {
+        match node {
+            PaneLayout::Leaf { terminal_id: 1 } => {
+                *node = PaneLayout::Split {
+                    direction,
+                    first: Box::new(PaneLayout::Leaf { terminal_id: 1 }),
+                    second: Box::new(PaneLayout::Leaf {
+                        terminal_id: new_id,
+                    }),
+                };
+            }
+            PaneLayout::Split { first, second, .. } => {
+                add_split(first, new_id, direction);
+                add_split(second, new_id, direction);
+            }
+            _ => {}
+        }
+    }
+    for (control, direction) in [
+        ("split-horizontal", SplitDirection::Horizontal),
+        ("split-vertical", SplitDirection::Vertical),
+    ] {
+        let (mut state, outgoing) = mock();
+        let mut view = snapshot();
+        view.workspaces[0].terminals.truncate(1);
+        view.workspaces[0].tabs.truncate(1);
+        view.terminals = vec![view.terminal.clone().unwrap()];
+        state.apply(view.clone());
+        let mut rt = make_runtime(state, (1400.0, 900.0));
+        rt.frame(0.0);
+        for new_id in 2..=4 {
+            commands(&outgoing);
+            let key = if new_id == 2 {
+                control.to_owned()
+            } else {
+                format!("{control}-1")
+            };
+            click(&mut rt, &key);
+            let sent = commands(&outgoing);
+            let (serial, split) = sent
+                .last()
+                .unwrap_or_else(|| panic!("no command for {key}, new pane {new_id}"));
+            assert!(
+                matches!(split, Command::SplitTerminal { terminal_id: 1, direction: d } if *d == direction)
+            );
+            if new_id > 2 {
+                assert!(matches!(
+                    sent[0].1,
+                    Command::SelectTerminal { terminal_id: 1 }
+                ));
+            }
+            add_split(&mut view.workspaces[0].tabs[0].layout, new_id, direction);
+            let mut info = view.workspaces[0].terminals[0].clone();
+            info.id = new_id;
+            view.workspaces[0].terminals.push(info);
+            let mut frame = view.terminals[0].clone();
+            frame.id = new_id;
+            view.terminals.push(frame.clone());
+            view.active_terminal = Some(new_id);
+            view.terminal = Some(frame);
+            view.ack = *serial;
+            rt.update(|s, _| s.apply(view.clone()));
+            for _ in 0..60 {
+                rt.frame(1.0 / 60.0);
+            }
+            assert!(rt.state.ready());
+            assert_eq!(rt.state.active_terminal(), Some(new_id));
+            assert_eq!(
+                rt.state.active_tab().unwrap().layout.terminal_ids().len(),
+                new_id as usize
+            );
+        }
+    }
+}
+
+#[test]
+fn single_pane_header_close_preserves_last_terminal_confirmation() {
+    for last_terminal in [false, true] {
+        let (mut state, outgoing) = mock();
+        if last_terminal {
+            let workspace = &mut state.snapshot.as_mut().unwrap().workspaces[0];
+            workspace.terminals.truncate(1);
+            workspace.tabs.truncate(1);
+        }
+        let mut rt = make_runtime(state, (1100.0, 720.0));
+        rt.frame(0.0);
+        commands(&outgoing);
+        click(&mut rt, "close-pane");
+        let sent = commands(&outgoing);
+        if last_terminal {
+            assert!(matches!(rt.state.dialog, Some(Dialog::CloseTerminal(1, _))));
+            assert!(sent.is_empty());
+        } else {
+            assert!(rt.state.dialog.is_none());
+            assert_eq!(sent.len(), 1);
+            assert!(matches!(
+                sent[0].1,
+                Command::CloseTerminal { terminal_id: 1 }
+            ));
+        }
+    }
 }
 
 #[test]

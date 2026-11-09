@@ -304,16 +304,6 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     .gap(8.0)
                     .center_y()
                     .child(tabs)
-                    .child(crate::panes::split_button(
-                        state,
-                        &p,
-                        crate::settings::Action::SplitVertical,
-                    ))
-                    .child(crate::panes::split_button(
-                        state,
-                        &p,
-                        crate::settings::Action::SplitHorizontal,
-                    ))
                     .child(
                         button("new-terminal", "+ Terminal", &p)
                             .disabled(!state.ready() || state.workspace().is_none())

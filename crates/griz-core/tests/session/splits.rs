@@ -10,6 +10,48 @@ fn frame_contains(state: &ViewState, terminal_id: u64, needle: &str) -> bool {
 }
 
 #[test]
+fn queued_selection_and_split_can_repeatedly_split_the_original_pane() {
+    for direction in [SplitDirection::Horizontal, SplitDirection::Vertical] {
+        let service = Service::start();
+        let mut stream = service.attach(80, 24);
+        let initial = next_view(&mut stream);
+        let original = initial.active_terminal.unwrap();
+        let tab_id = initial.workspaces[0].tabs[0].id;
+        let mut serial = 1;
+        for pane_count in 2..=MAX_PANES_PER_TAB {
+            // Match the GUI: send selection and split in order without waiting
+            // for a selection ack, even though the previous split focused a new pane.
+            command(
+                &mut stream,
+                serial,
+                CoreCommand::SelectTerminal {
+                    terminal_id: original,
+                },
+            );
+            serial += 1;
+            command(
+                &mut stream,
+                serial,
+                CoreCommand::SplitTerminal {
+                    terminal_id: original,
+                    direction,
+                },
+            );
+            let expanded = ack(&mut stream, serial);
+            serial += 1;
+            assert_ne!(expanded.active_terminal, Some(original));
+            assert_eq!(expanded.workspaces[0].tabs.len(), 1);
+            assert_eq!(expanded.workspaces[0].tabs[0].id, tab_id);
+            assert_eq!(
+                expanded.workspaces[0].tabs[0].layout.terminal_ids().len(),
+                pane_count
+            );
+            assert_eq!(expanded.terminals.len(), pane_count);
+        }
+    }
+}
+
+#[test]
 fn nested_splits_publish_all_frames_per_client_and_preserve_pane_sizes_on_focus() {
     let service = Service::start();
     let mut first = service.attach(80, 24);

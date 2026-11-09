@@ -1,8 +1,6 @@
 //! Recursive tab layouts. Every leaf retains its own rounded terminal frame.
 use crate::{
-    Command, State,
-    settings::Action,
-    terminal_view,
+    Command, State, terminal_view,
     ui::{Palette, button},
 };
 use griz_protocol::{PaneLayout, SplitDirection, TerminalId};
@@ -102,18 +100,40 @@ fn card(state: &State, p: &Palette, id: Option<TerminalId>, split: bool) -> El {
                 }),
         );
     }
-    if split {
-        header = header.child(
-            button(key("close-pane"), "×", p)
-                .label(format!("Close terminal {label}"))
-                .disabled(!state.ready())
+    header = header.child(
+        row()
+            .key(key("pane-controls"))
+            .gap(4.0)
+            .center_y()
+            .child(split_button(
+                state,
+                p,
+                key("split-vertical"),
+                id,
+                SplitDirection::Vertical,
+            ))
+            .child(split_button(
+                state,
+                p,
+                key("split-horizontal"),
+                id,
+                SplitDirection::Horizontal,
+            ))
+            .child(
+                pane_button(
+                    key("close-pane"),
+                    "×",
+                    &format!("Close terminal {label}"),
+                    p,
+                )
+                .disabled(!state.ready() || id.is_none())
                 .on_press_tx(move |s: &mut State, tx| {
                     if let Some(id) = id {
                         s.request_close_terminal(id, tx);
                     }
                 }),
-        );
-    }
+            ),
+    );
     col()
         .key(key("terminal-card"))
         .grow(1.0)
@@ -138,14 +158,39 @@ fn card(state: &State, p: &Palette, id: Option<TerminalId>, split: bool) -> El {
         )
 }
 
-pub fn split_button(state: &State, p: &Palette, action: Action) -> El {
-    let (key, label, help) = match action {
-        Action::SplitHorizontal => ("split-horizontal", "↕", "Split horizontally (top / bottom)"),
-        _ => ("split-vertical", "↔", "Split vertically (left / right)"),
-    };
-    button(key, label, p)
+fn pane_button(key: String, icon: &str, help: &str, p: &Palette) -> El {
+    row()
+        .key(key)
+        .role("button")
         .label(help)
         .help(help)
-        .disabled(!state.can_split())
-        .on_press_tx(move |s: &mut State, tx| s.act(action, tx))
+        .focusable(true)
+        .w(p.control_height())
+        .h(p.control_height())
+        .center()
+        .radius(4.0)
+        .hover(p.button_fill())
+        .focus_ring(2.0, -2.0, p.accent)
+        .child(text(icon).font(p.label).color(p.muted))
+}
+
+fn split_button(
+    state: &State,
+    p: &Palette,
+    key: String,
+    id: Option<TerminalId>,
+    direction: SplitDirection,
+) -> El {
+    let (icon, help) = match direction {
+        SplitDirection::Horizontal => ("↕", "Split horizontally (top / bottom)"),
+        SplitDirection::Vertical => ("↔", "Split vertically (left / right)"),
+    };
+    pane_button(key, icon, help, p)
+        .disabled(!state.can_split() || id.is_none())
+        .on_press_tx(move |s: &mut State, tx| {
+            if let Some(terminal_id) = id {
+                s.split_terminal(terminal_id, direction);
+            }
+            tx.blur();
+        })
 }

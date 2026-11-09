@@ -163,14 +163,14 @@ impl State {
                 if self.can_split()
                     && let Some(terminal_id) = self.active_terminal()
                 {
-                    self.change(Command::SplitTerminal {
+                    self.split_terminal(
                         terminal_id,
-                        direction: if action == Action::SplitHorizontal {
+                        if action == Action::SplitHorizontal {
                             SplitDirection::Horizontal
                         } else {
                             SplitDirection::Vertical
                         },
-                    });
+                    );
                 }
             }
             Action::NextPane | Action::PreviousPane => {
@@ -238,6 +238,34 @@ impl State {
             && self
                 .active_tab()
                 .is_some_and(|t| t.layout.terminal_ids().len() < griz_protocol::MAX_PANES_PER_TAB)
+    }
+
+    fn split_terminal(&mut self, terminal_id: TerminalId, direction: SplitDirection) {
+        if !self.can_split()
+            || !self
+                .active_tab()
+                .is_some_and(|tab| tab.layout.contains(terminal_id))
+        {
+            return;
+        }
+        let split = Command::SplitTerminal {
+            terminal_id,
+            direction,
+        };
+        if self.active_terminal() == Some(terminal_id) {
+            self.change(split);
+            return;
+        }
+
+        // The core requires the split target to be selected. Queue both commands
+        // on the same ordered connection, and gate input until the split's ack:
+        // the intermediate selection snapshot must not re-enable typing.
+        self.change(Command::SelectTerminal { terminal_id });
+        if self.pending.is_some()
+            && let Some(serial) = self.send(split)
+        {
+            self.pending = Some(serial);
+        }
     }
 
     fn pane_frame(&self, id: TerminalId) -> Option<&griz_protocol::TerminalFrame> {
