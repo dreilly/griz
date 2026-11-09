@@ -1,4 +1,5 @@
 //! Durable multi-workspace terminal service. Socket clients own only their view selection.
+mod agents;
 mod clients;
 mod service;
 mod session;

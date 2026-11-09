@@ -43,7 +43,32 @@ struct GrizVt {
     uint8_t* responses;
     size_t responses_len;
     size_t responses_cap;
+    void (*program_status)(void*, const GhosttyTerminalProgramStatus*);
+    void (*prompt_start)(void*);
+    void* status_userdata;
 };
+
+static void griz_program_status(
+    GhosttyTerminal terminal,
+    void* userdata,
+    const GhosttyTerminalProgramStatus* report
+) {
+    (void)terminal;
+    struct GrizVt* vt = userdata;
+    vt->program_status(vt->status_userdata, report);
+}
+
+static void griz_semantic_prompt(
+    GhosttyTerminal terminal,
+    void* userdata,
+    const GhosttyTerminalSemanticPrompt* event
+) {
+    (void)terminal;
+    struct GrizVt* vt = userdata;
+    if (event->kind == GHOSTTY_SEMANTIC_PROMPT_PROMPT_START) {
+        vt->prompt_start(vt->status_userdata);
+    }
+}
 
 static void griz_write_pty(
     GhosttyTerminal terminal,
@@ -91,7 +116,14 @@ static void griz_vt_free_partial(struct GrizVt* vt) {
     free(vt);
 }
 
-int griz_vt_new(uint16_t cols, uint16_t rows, struct GrizVt** out) {
+int griz_vt_new(
+    uint16_t cols,
+    uint16_t rows,
+    struct GrizVt** out,
+    void (*program_status)(void*, const GhosttyTerminalProgramStatus*),
+    void (*prompt_start)(void*),
+    void* status_userdata
+) {
     if (out == NULL) {
         return GHOSTTY_INVALID_VALUE;
     }
@@ -102,6 +134,9 @@ int griz_vt_new(uint16_t cols, uint16_t rows, struct GrizVt** out) {
         return GHOSTTY_OUT_OF_MEMORY;
     }
 
+    vt->program_status = program_status;
+    vt->prompt_start = prompt_start;
+    vt->status_userdata = status_userdata;
     GhosttyResult result = ghostty_terminal_new(NULL, &vt->terminal, cols, rows);
     if (result != GHOSTTY_SUCCESS) {
         griz_vt_free_partial(vt);
@@ -133,6 +168,19 @@ int griz_vt_new(uint16_t cols, uint16_t rows, struct GrizVt** out) {
         GHOSTTY_TERMINAL_OPT_WRITE_PTY,
         (const void*)griz_write_pty
     );
+    if (result != GHOSTTY_SUCCESS) {
+        griz_vt_free_partial(vt);
+        return result;
+    }
+
+    // Registering the native status hook also enables OSC 7501 feature replies
+    // through write_pty, in stream order before a following DA response.
+    result = ghostty_terminal_set(vt->terminal, GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS,
+                                  (const void*)griz_program_status);
+    if (result == GHOSTTY_SUCCESS) {
+        result = ghostty_terminal_set(vt->terminal, GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT,
+                                      (const void*)griz_semantic_prompt);
+    }
     if (result != GHOSTTY_SUCCESS) {
         griz_vt_free_partial(vt);
         return result;

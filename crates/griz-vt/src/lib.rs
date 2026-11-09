@@ -1,8 +1,12 @@
 //! Safe, single-threaded wrapper around libghostty-vt 1.0.
 
-use griz_protocol::{Cell, Screen};
+mod program_status;
+#[cfg(test)]
+mod program_status_tests;
+
+use griz_protocol::{Cell, ProgramStatusRecord, Screen};
 use std::error;
-use std::ffi::c_int;
+use std::ffi::{c_int, c_void};
 use std::fmt;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -48,7 +52,14 @@ struct GrizVtSnapshot {
 }
 
 unsafe extern "C" {
-    fn griz_vt_new(cols: u16, rows: u16, out: *mut *mut GrizVt) -> c_int;
+    fn griz_vt_new(
+        cols: u16,
+        rows: u16,
+        out: *mut *mut GrizVt,
+        report: extern "C" fn(*mut c_void, *const program_status::RawReport),
+        prompt: extern "C" fn(*mut c_void),
+        userdata: *mut c_void,
+    ) -> c_int;
     fn griz_vt_free(vt: *mut GrizVt);
     fn griz_vt_write(vt: *mut GrizVt, data: *const u8, len: usize);
     fn griz_vt_resize(vt: *mut GrizVt, cols: u16, rows: u16) -> c_int;
@@ -95,6 +106,7 @@ impl error::Error for Error {}
 /// actor thread.
 pub struct Terminal {
     raw: NonNull<GrizVt>,
+    statuses: Box<program_status::Records>,
     _single_threaded: PhantomData<Rc<()>>,
 }
 
@@ -102,15 +114,26 @@ impl Terminal {
     /// Creates a terminal with the given cell dimensions.
     pub fn new(cols: u16, rows: u16) -> Result<Self, Error> {
         let mut raw = std::ptr::null_mut();
-        // SAFETY: `raw` is a valid out pointer. The C shim owns all Ghostty ABI
-        // interaction and returns either a live handle or an error.
-        check("create", unsafe { griz_vt_new(cols, rows, &mut raw) })?;
+        let mut statuses = Box::<program_status::Records>::default();
+        // SAFETY: out is valid; userdata is a stable Box kept alive until after
+        // the terminal is freed. Callbacks run synchronously during VT writes.
+        check("create", unsafe {
+            griz_vt_new(
+                cols,
+                rows,
+                &mut raw,
+                program_status::report,
+                program_status::prompt,
+                (&mut *statuses as *mut program_status::Records).cast(),
+            )
+        })?;
         let raw = NonNull::new(raw).ok_or(Error {
             operation: "create",
             code: INVALID_VALUE,
         })?;
         Ok(Self {
             raw,
+            statuses,
             _single_threaded: PhantomData,
         })
     }
@@ -120,6 +143,21 @@ impl Terminal {
         // SAFETY: the terminal handle is live and `bytes` remains valid for the
         // duration of this synchronous call.
         unsafe { griz_vt_write(self.raw.as_ptr(), bytes.as_ptr(), bytes.len()) }
+    }
+
+    /// Current OSC 7501 records, least recently updated first. Missing fields
+    /// stay missing; app inheritance is resolved by the presentation layer.
+    pub fn program_status(&self) -> &[ProgramStatusRecord] {
+        &self.statuses.records
+    }
+
+    pub fn take_program_status_changed(&mut self) -> bool {
+        self.statuses.take_changed()
+    }
+
+    /// Drop transient reports on PTY process exit; retain done/error results.
+    pub fn program_exited(&mut self) {
+        self.statuses.expire_transient();
     }
 
     /// Resizes the terminal grid. Primary-screen wrapped content may reflow.

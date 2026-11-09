@@ -59,6 +59,7 @@ struct TerminalRecord {
     vt: Terminal,
     session: Session,
     exited: Option<String>,
+    agent_notifications: crate::agents::Notifications,
 }
 
 impl TerminalRecord {
@@ -83,6 +84,7 @@ impl TerminalRecord {
             vt,
             session,
             exited: None,
+            agent_notifications: crate::agents::Notifications::default(),
         })
     }
 
@@ -94,6 +96,9 @@ impl TerminalRecord {
             directory: directory_path(&self.current_cwd),
             shell_pid: self.session.pid,
             exited: self.exited.clone(),
+            agents: self
+                .agent_notifications
+                .info(self.vt.program_status(), self.generation),
         }
     }
 }
@@ -132,6 +137,7 @@ pub struct Service {
     next_workspace_id: WorkspaceId,
     next_terminal_id: TerminalId,
     dirty: HashSet<TerminalId>,
+    catalog_dirty: bool,
     frame_deadline: Option<Instant>,
     last_output_frame: Option<Instant>,
     pending_input_acks: HashSet<ClientId>,
@@ -167,6 +173,7 @@ impl Service {
             next_workspace_id: 2,
             next_terminal_id: 2,
             dirty: HashSet::new(),
+            catalog_dirty: false,
             frame_deadline: None,
             last_output_frame: None,
             pending_input_acks: HashSet::new(),
@@ -256,6 +263,8 @@ impl Service {
         rows: u16,
         outbox: Arc<Outbox>,
     ) -> Result<()> {
+        // Directory polling sleeps without windows; refresh before reconnect.
+        self.refresh_directories();
         let active_workspace = self.workspaces.first().map_or(0, |workspace| workspace.id);
         let selected = self
             .workspaces
@@ -368,6 +377,25 @@ impl Service {
         command: Command,
     ) -> std::result::Result<Outcome, String> {
         match command {
+            Command::AcknowledgeAgent {
+                terminal_id,
+                generation,
+                id,
+                revision,
+            } => {
+                let (workspace, terminal) = self
+                    .terminal_location(terminal_id)
+                    .ok_or_else(|| format!("unknown terminal {terminal_id}"))?;
+                let terminal = &mut self.workspaces[workspace].terminals[terminal];
+                if terminal.generation == generation {
+                    terminal.agent_notifications.acknowledge(
+                        terminal.vt.program_status(),
+                        &id,
+                        revision,
+                    );
+                }
+                Ok(Outcome::Catalog)
+            }
             Command::SetPreview { target } => {
                 // Invalidated targets simply produce no preview; catalog changes can race
                 // navigation. Never change remembered selections or terminal dimensions.
@@ -804,6 +832,17 @@ impl Service {
             return;
         }
         terminal.vt.write(&bytes);
+        // The reader can deliver final bytes after the child's wait notification.
+        // Preserve final done/error reports, but never resurrect transient ones.
+        if terminal.exited.is_some() {
+            terminal.vt.program_exited();
+        }
+        if terminal.vt.take_program_status_changed() {
+            terminal
+                .agent_notifications
+                .reconcile(terminal.vt.program_status());
+            self.catalog_dirty |= !self.clients.is_empty();
+        }
         let responses = terminal.vt.take_responses();
         if !responses.is_empty()
             && let Some(input) = terminal.session.input()
@@ -823,6 +862,11 @@ impl Service {
             return Ok(());
         }
         terminal.exited = Some(status);
+        terminal.vt.program_exited();
+        terminal.vt.take_program_status_changed();
+        terminal
+            .agent_notifications
+            .reconcile(terminal.vt.program_status());
         self.dirty.clear();
         self.frame_deadline = None;
         self.publish_all()
@@ -851,7 +895,9 @@ impl Service {
     }
 
     fn queue_frame(&mut self, terminal_id: TerminalId) {
-        if !self.terminal_is_observed(terminal_id) {
+        if self.clients.is_empty()
+            || (!self.catalog_dirty && !self.terminal_is_observed(terminal_id))
+        {
             return;
         }
         self.dirty.insert(terminal_id);
@@ -871,7 +917,8 @@ impl Service {
             .keys()
             .copied()
             .filter(|client_id| {
-                self.pending_input_acks.contains(client_id)
+                self.catalog_dirty
+                    || self.pending_input_acks.contains(client_id)
                     || self
                         .observed_terminal_ids(*client_id)
                         .iter()
@@ -882,11 +929,13 @@ impl Service {
             self.last_output_frame = Some(Instant::now());
         }
         self.dirty.clear();
+        self.catalog_dirty = false;
         self.frame_deadline = None;
         self.publish_views(&clients)
     }
 
     fn publish_all(&mut self) -> Result<()> {
+        self.catalog_dirty = false;
         let clients = self.clients.keys().copied().collect::<Vec<_>>();
         self.publish_views(&clients)
     }

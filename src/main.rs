@@ -1,4 +1,5 @@
 //! Native Rune client. Workspaces, PTYs and terminal emulators live in griz-core.
+mod agents_ui;
 mod client;
 mod command_palette;
 mod input;

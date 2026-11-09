@@ -118,6 +118,77 @@ connection, and a scratch shell, all in unrelated directories.
 tab, closing a workspace, and explicitly stopping the service are deliberately
 separate operations. Tab renaming/reordering are not implemented yet.
 
+## Agents
+
+The **Agents** section below Workspaces lists programs reporting status across
+**all** workspaces, tabs, and split panes. It uses the
+[Program Status Protocol (OSC 7501)](https://www.superlogical.com/rex/docs/build/program-status),
+not screen scraping, process-name detection, or harness-specific extensions.
+
+### No per-agent setup
+
+Run a program that natively supports OSC 7501, such as current Pi:
+
+```sh
+pi
+```
+
+No `-e`, extension installation, wrapper command, or special environment variable
+is required. The program queries the terminal, Griz answers, and the program
+reports its state. Programs may also send reports without querying. Agents that
+do not implement the protocol do not appear merely because their process is
+running; Griz does not inject hooks or guess whether they are finished.
+
+Rebuild both Griz processes and use a **new core** for this feature. See the
+isolated preview instructions above to keep existing terminals undisturbed.
+The earlier experimental Pi bridge and custom agent-reporting IPC are no longer
+used or shipped.
+
+### Status and attention
+
+Reports appear as **Working**, **Waiting** (protocol `blocked`), **Error**,
+**Done**, or **Idle**. Record titles, messages, progress, and waiting reasons
+come from the program. Click a record to jump to its exact terminal pane and
+acknowledge its notification. Filled dots and a count mark unacknowledged
+completion, input requests, or failures. Acknowledgements sync across windows
+and cannot dismiss a newer revision or a replacement shell's result.
+
+The core consumes reports even when a pane is hidden or every GUI is closed.
+Reopening shows the current records and unacknowledged results. Updates are
+coalesced with normal frame delivery, not published on every status byte.
+These are **in-app indicators**, not macOS notification-center alerts.
+
+OSC 7501 supports a root record plus hierarchical child records in the same
+pane. Griz keeps up to **64 records per terminal** (the protocol's required
+minimum), evicting the least recently updated record at the cap. Each report
+replaces that record completely; absent fields are not sticky. Child records
+inherit `app` from the nearest ancestor that specifies one. Children reported
+by a program are supported; independent headless process discovery is not.
+
+A `clear` report removes its record and descendants; clearing the root or a full
+terminal reset removes everything. A new shell prompt (OSC 133 `A`) or PTY
+process exit drops Working/Waiting/Idle records, but **Done/Error results survive**
+until the program clears/replaces them or the terminal is closed/restarted.
+There are no heartbeats, idle timeouts, or PID-liveness guesses. Applications
+can explicitly clear records on shutdown, so not every exit leaves a result.
+
+libghostty-vt validates syntax, base64, control characters, and protocol limits.
+Messages and titles are untrusted plain text; Griz disarms invisible formatting
+controls outside the grid and always identifies the source workspace/pane.
+Full protocol-sized messages stay in the terminal's record store; sidebar
+message previews are capped at 512 UTF-8 bytes to bound catalog IPC.
+
+### Try the protocol from a shell
+
+```sh
+printf '\033]7501;state=working:app=example:progress=40\033\\'
+printf '\033]7501;state=done:app=example:msg=VGVzdHMgcGFzc2Vk\033\\'
+printf '\033]7501;state=clear\033\\'
+```
+
+The second report's message decodes to “Tests passed”. Any application can use
+the same protocol; it is not specific to coding agents.
+
 ## Two processes, independent lifetimes
 
 - **`griz-core`** owns the workspace catalog and each terminal's PTY, interactive
@@ -315,6 +386,10 @@ resizing, focus/input acknowledgement safety, cwd inheritance, sibling output,
 multi-client selection, layout collapse, stable tab IDs, and pane limits.
 Navigation preview tests cover live hidden-pane output, subscription isolation,
 unchanged selection/dimensions, stale targets, dismissal, and fitted split miniatures.
+Agent tests cover native OSC 7501 negotiation/DA ordering, arbitrary PTY chunking,
+metadata validation, bounded hierarchical records, field replacement/inheritance,
+clear/reset/prompt/exit lifetimes, hidden/multi-client/detached reporting,
+revision/generation-safe acknowledgements, and exact-pane navigation/input gating.
 Other tests exercise libghostty's colors/cursor/Unicode/alternate screen/query
 responses and Rune's cell placement.
 

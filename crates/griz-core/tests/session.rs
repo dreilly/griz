@@ -14,6 +14,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[path = "session/accents.rs"]
 mod accents;
+#[path = "session/agents.rs"]
+mod agents;
 #[path = "session/input_latency.rs"]
 mod input_latency;
 #[path = "session/naming.rs"]

@@ -1,3 +1,5 @@
+#[path = "tests/agents.rs"]
+mod agents;
 #[path = "tests/buttons.rs"]
 mod buttons;
 #[path = "tests/command_palette.rs"]
@@ -38,6 +40,7 @@ fn snapshot() -> ViewState {
         directory: "/tmp".into(),
         shell_pid: id as u32 + 100,
         exited: None,
+        agents: vec![],
     };
     ViewState {
         core_pid: 42,

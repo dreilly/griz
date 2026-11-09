@@ -104,6 +104,54 @@ pub struct TerminalInfo {
     pub directory: String,
     pub shell_pid: u32,
     pub exited: Option<String>,
+    /// OSC 7501 records from this terminal, with client-independent attention state.
+    #[serde(default)]
+    pub agents: Vec<AgentInfo>,
+}
+
+/// Explicit lifecycle state, never inferred from terminal output or inactivity.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStatus {
+    Idle,
+    Working,
+    Blocked,
+    Done,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramStatusKind {
+    Permission,
+    Question,
+    Auth,
+}
+
+/// One OSC 7501 record. Text is decoded, untrusted, and never interpreted as markup.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProgramStatusRecord {
+    /// Empty string denotes the root record; other IDs are hierarchical paths.
+    pub id: String,
+    pub status: AgentStatus,
+    pub app: String,
+    pub title: String,
+    pub message: String,
+    pub kind: Option<ProgramStatusKind>,
+    pub progress: Option<u8>,
+    /// Monotonic within a shell generation, including across clear/reset.
+    pub revision: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentInfo {
+    /// Presentation snapshot: app inheritance resolved, message preview ≤512 bytes.
+    /// The VT retains the original record and its full protocol-sized message.
+    #[serde(flatten)]
+    pub record: ProgramStatusRecord,
+    pub generation: u64,
+    /// Completion, input request, or failure has not been acknowledged yet.
+    pub unread: bool,
 }
 
 /// Shared workspace chrome color; independent of terminal ANSI colors.
@@ -205,6 +253,13 @@ pub enum Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
+    /// Acknowledge exactly the notification the client saw, not a newer transition.
+    AcknowledgeAgent {
+        terminal_id: TerminalId,
+        generation: u64,
+        id: String,
+        revision: u64,
+    },
     /// Subscribe to one tab's screens without selecting, resizing, or focusing it.
     SetPreview {
         target: Option<PreviewTarget>,

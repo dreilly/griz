@@ -182,6 +182,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     ),
             )
             .child(workspaces)
+            .child(crate::agents_ui::section(state, &p))
             .child(
                 button("reconnect", "Reconnect", &p)
                     .disabled(state.offline)
