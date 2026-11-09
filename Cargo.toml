@@ -20,6 +20,11 @@ serde_json = "1"
 [dev-dependencies]
 griz-vt = { path = "crates/griz-vt" }
 
+# The default launcher uses dev builds. Unoptimized whole-screen serialization
+# and Rune layout add tens of milliseconds to each keystroke on larger grids.
+[profile.dev]
+opt-level = 1
+
 [profile.dev.package."*"]
 debug = false
 

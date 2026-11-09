@@ -32,7 +32,8 @@ For a standalone checkout later, replace the Rune path dependency with a pinned 
 ### Development
 
 Griz is pre-release. The GUI and core evolve together; breaking changes are expected,
-and IPC compatibility is not maintained. Rebuild both processes after changes.
+and IPC compatibility is not maintained. Rebuild both processes after changes. Dev builds use optimization level 1 so
+whole-screen IPC and GUI layout stay responsive while retaining debug checks.
 
 Rebuilding does not replace a running core, and stopping the core ends its terminals.
 To test changes **without disturbing existing sessions**, use a separate endpoint:
@@ -315,6 +316,27 @@ Navigation preview tests cover live hidden-pane output, subscription isolation,
 unchanged selection/dimensions, stale targets, dismissal, and fitted split miniatures.
 Other tests exercise libghostty's colors/cursor/Unicode/alternate screen/query
 responses and Rune's cell placement.
+
+### Input latency measurements
+
+Measure local PTY echo through a temporary, isolated core (existing sessions are
+never attached to or stopped):
+
+```sh
+cargo build --workspace
+python3 scripts/bench_input.py --binary target/debug/griz-core \
+  --size 80x24 --size 160x48 --samples 60 \
+  --output artifacts/input-latency.json
+# Verify typing after subscribing/unsubscribing a palette preview:
+python3 scripts/bench_input.py --binary target/debug/griz-core --preview-cycle
+# CPU-side GUI dispatch/apply/frame timings, including a densely filled terminal:
+cargo test -p griz input_latency_gui_cpu -- --ignored --nocapture --test-threads=1
+```
+
+Repeat `--binary` to compare saved builds. The script waits for an actual cursor
+change, not just an acknowledgement, and reports complete socket-frame arrival
+separately from Python JSON decoding. GUI timings exclude GPU submission and
+physical display scanout; neither benchmark is a key-to-photon measurement.
 
 For an offline GUI capture, save a current **`view` event** (including its catalog
 and selected terminal) into a JSON file:

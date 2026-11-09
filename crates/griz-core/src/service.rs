@@ -19,6 +19,36 @@ const DEFAULT_SIZE: (u16, u16) = (80, 24);
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+fn output_frame_deadline(last: Option<Instant>, now: Instant) -> Instant {
+    last.map_or(now, |last| (last + FRAME_INTERVAL).max(now))
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+
+    #[test]
+    fn first_and_idle_output_do_not_wait_for_a_frame_interval() {
+        let now = Instant::now();
+        assert_eq!(output_frame_deadline(None, now), now);
+        assert_eq!(
+            output_frame_deadline(Some(now - FRAME_INTERVAL * 2), now),
+            now
+        );
+    }
+
+    #[test]
+    fn sustained_output_keeps_the_existing_frame_boundary() {
+        let last = Instant::now();
+        for elapsed in [1, 4, 8, 15] {
+            assert_eq!(
+                output_frame_deadline(Some(last), last + Duration::from_millis(elapsed)),
+                last + FRAME_INTERVAL,
+            );
+        }
+    }
+}
+
 struct TerminalRecord {
     id: TerminalId,
     label: String,
@@ -90,6 +120,7 @@ struct Client {
 enum Outcome {
     Requester,
     Catalog,
+    Input,
 }
 
 pub struct Service {
@@ -102,6 +133,8 @@ pub struct Service {
     next_terminal_id: TerminalId,
     dirty: HashSet<TerminalId>,
     frame_deadline: Option<Instant>,
+    last_output_frame: Option<Instant>,
+    pending_input_acks: HashSet<ClientId>,
 }
 
 impl Service {
@@ -135,6 +168,8 @@ impl Service {
             next_terminal_id: 2,
             dirty: HashSet::new(),
             frame_deadline: None,
+            last_output_frame: None,
+            pending_input_acks: HashSet::new(),
         })
     }
 
@@ -262,6 +297,7 @@ impl Service {
 
     fn detach(&mut self, client_id: ClientId) {
         self.clients.remove(&client_id);
+        self.pending_input_acks.remove(&client_id);
         if self.clients.is_empty() {
             self.dirty.clear();
             self.frame_deadline = None;
@@ -299,6 +335,16 @@ impl Service {
         let outcome = self.apply_command(client_id, command);
         let directories_changed = refresh && self.refresh_directories();
         match outcome {
+            Ok(Outcome::Input) => {
+                // The PTY has not echoed the key yet. Sending a full old screen here
+                // delays the useful picture and makes the GUI render twice per key.
+                // Output normally supplies the acknowledgement; a bounded fallback
+                // still acknowledges silent input (e.g. a password prompt).
+                self.pending_input_acks.insert(client_id);
+                self.frame_deadline
+                    .get_or_insert_with(|| Instant::now() + FRAME_INTERVAL);
+                Ok(())
+            }
             Ok(Outcome::Requester) if !directories_changed => self.publish_views(&[client_id]),
             Ok(_) => {
                 self.dirty.clear();
@@ -421,7 +467,7 @@ impl Service {
                     .map_err(|error| {
                         format!("terminal {terminal_id} input unavailable: {error}")
                     })?;
-                Ok(Outcome::Requester)
+                Ok(Outcome::Input)
             }
             Command::Resize {
                 terminal_id,
@@ -765,11 +811,7 @@ impl Service {
         {
             eprintln!("griz-core: terminal {terminal_id} response: {error}");
         }
-        if self.terminal_is_observed(terminal_id) {
-            self.dirty.insert(terminal_id);
-            self.frame_deadline
-                .get_or_insert_with(|| Instant::now() + FRAME_INTERVAL);
-        }
+        self.queue_frame(terminal_id);
     }
 
     fn exited(&mut self, terminal_id: TerminalId, generation: u64, status: String) -> Result<()> {
@@ -805,11 +847,22 @@ impl Service {
             eprintln!("griz-core: terminal {terminal_id} PTY resize: {error}");
         }
         terminal.grid = size;
-        if self.terminal_is_observed(terminal_id) {
-            self.dirty.insert(terminal_id);
-            self.frame_deadline
-                .get_or_insert_with(|| Instant::now() + FRAME_INTERVAL);
+        self.queue_frame(terminal_id);
+    }
+
+    fn queue_frame(&mut self, terminal_id: TerminalId) {
+        if !self.terminal_is_observed(terminal_id) {
+            return;
         }
+        self.dirty.insert(terminal_id);
+        // Flush the first output after idle immediately. Only sustained output
+        // waits for the next frame boundary; do not add a fresh 16 ms to every key.
+        let now = Instant::now();
+        let deadline = output_frame_deadline(self.last_output_frame, now);
+        self.frame_deadline = Some(
+            self.frame_deadline
+                .map_or(deadline, |old| old.min(deadline)),
+        );
     }
 
     fn flush_dirty(&mut self) -> Result<()> {
@@ -818,11 +871,16 @@ impl Service {
             .keys()
             .copied()
             .filter(|client_id| {
-                self.observed_terminal_ids(*client_id)
-                    .iter()
-                    .any(|terminal_id| self.dirty.contains(terminal_id))
+                self.pending_input_acks.contains(client_id)
+                    || self
+                        .observed_terminal_ids(*client_id)
+                        .iter()
+                        .any(|terminal_id| self.dirty.contains(terminal_id))
             })
             .collect::<Vec<_>>();
+        if !self.dirty.is_empty() {
+            self.last_output_frame = Some(Instant::now());
+        }
         self.dirty.clear();
         self.frame_deadline = None;
         self.publish_views(&clients)
@@ -868,6 +926,7 @@ impl Service {
             }
         }
         for (client_id, active_workspace, active_terminal, terminal_ids, ack, outbox) in specs {
+            self.pending_input_acks.remove(&client_id);
             let frames = terminal_ids
                 .into_iter()
                 .filter_map(|terminal_id| {

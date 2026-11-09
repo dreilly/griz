@@ -4,6 +4,8 @@ mod buttons;
 mod command_palette_tests;
 #[path = "tests/font_and_close.rs"]
 mod font_and_close;
+#[path = "tests/input_latency.rs"]
+mod input_latency;
 #[path = "tests/navigation_previews.rs"]
 mod navigation_previews;
 #[path = "tests/settings.rs"]

@@ -348,7 +348,9 @@ impl State {
         }
     }
 
-    fn input(&mut self, bytes: Vec<u8>) {
+    /// Return whether input changed view-visible state (normally only an error).
+    /// Sending bytes alone needs no GUI rebuild; the echoed screen arrives via poll.
+    fn input(&mut self, bytes: Vec<u8>) -> bool {
         // A click may race a previously queued screen. Never type into the old tab.
         if self.settings_open
             || self.dialog.is_some()
@@ -356,26 +358,29 @@ impl State {
             || self.pending.is_some()
             || self.offline
         {
-            return;
+            return false;
         }
         if !self.online {
             self.notice = Some("Not connected. Click Reconnect.".into());
-            return;
+            return true;
         }
         if self.shell_exited() {
             self.notice = Some("Shell has exited. Click Start new shell above.".into());
-            return;
+            return true;
         }
         if bytes.len() > griz_protocol::MAX_INPUT {
             self.notice = Some("Input rejected: paste limit is 256 KiB".into());
-            return;
+            return true;
         }
         if let Some(terminal_id) = self.active_terminal() {
-            self.send(Command::Input {
-                terminal_id,
-                data: bytes,
-            });
+            return self
+                .send(Command::Input {
+                    terminal_id,
+                    data: bytes,
+                })
+                .is_none();
         }
+        false
     }
 
     fn apply(&mut self, snapshot: ViewState) {
@@ -648,7 +653,9 @@ fn terminal_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     }
     let application_cursor = state.screen().is_some_and(|s| s.application_cursor);
     if let Some(bytes) = input::encode(event, application_cursor) {
-        state.input(bytes);
+        if !state.input(bytes) {
+            tx.live_only();
+        }
         true
     } else {
         false
@@ -674,8 +681,11 @@ fn on_ime(state: &mut State, event: &Ime, tx: &mut Tx) -> bool {
     match event {
         Ime::Preedit(text, _) if state.ready() => state.preedit = text.clone(),
         Ime::Commit(text) => {
+            let had_preedit = !state.preedit.is_empty();
             state.preedit.clear();
-            state.input(text.as_bytes().to_vec());
+            if !state.input(text.as_bytes().to_vec()) && !had_preedit {
+                tx.live_only();
+            }
         }
         Ime::Disabled => state.preedit.clear(),
         _ => {}
