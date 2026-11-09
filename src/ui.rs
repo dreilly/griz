@@ -150,7 +150,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     .child(
                         text(workspace.name.clone())
                             .font(p.label)
-                            .color(if active { accent } else { p.ink })
+                            .color(accent)
                             .truncate(),
                     ),
             );

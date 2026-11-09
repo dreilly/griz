@@ -109,6 +109,53 @@ fn workspace_accent_colors_the_selected_tab_sidebar_and_active_pane_in_both_them
 }
 
 #[test]
+fn workspace_labels_keep_their_accent_when_unselected_without_a_background_highlight() {
+    let mut rt = runtime((1100.0, 720.0));
+    for theme in [settings::Theme::Dark, settings::Theme::Midnight] {
+        for accent in WorkspaceAccent::ALL {
+            for active_workspace in [1, 2] {
+                let mut updated = snapshot();
+                updated.workspaces[0].accent = WorkspaceAccent::Pink;
+                updated.workspaces[1].accent = accent;
+                updated.active_workspace = active_workspace;
+                updated.active_terminal = Some(if active_workspace == 1 { 1 } else { 3 });
+                updated.terminal.as_mut().unwrap().id = updated.active_terminal.unwrap();
+                let workspaces = updated.workspaces.clone();
+                rt.update(|s, _| {
+                    s.settings.theme = theme;
+                    s.apply(updated);
+                });
+                for _ in 0..60 {
+                    rt.frame(1.0 / 60.0);
+                }
+                let elements = rt.elements();
+                for workspace in workspaces {
+                    let color = workspace_ui::accent_color(workspace.accent);
+                    let label = elements
+                        .iter()
+                        .find(|e| e.text.as_deref() == Some(workspace.name.as_str()))
+                        .unwrap();
+                    assert_eq!(label.text_color, Some(color));
+                    let key = format!("workspace-{}", workspace.id);
+                    let row = elements
+                        .iter()
+                        .find(|e| e.key.as_deref() == Some(key.as_str()))
+                        .unwrap();
+                    assert_eq!(
+                        row.fill,
+                        if workspace.id == active_workspace {
+                            color.alpha(0.12)
+                        } else {
+                            rune::Color::TRANSPARENT
+                        }
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn switching_tabs_keeps_the_accent_and_switching_workspaces_uses_their_own_color() {
     let mut rt = runtime((1100.0, 720.0));
     let mut updated = snapshot();
