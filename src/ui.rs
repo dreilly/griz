@@ -1,7 +1,19 @@
 //! Workspace navigation and terminal tabs. No session ownership here.
 use crate::{Command, Dialog, State, TITLEBAR_HEIGHT, terminal_view};
 use rune::tok::type_;
-use rune::{Color, Cx, El, TextStyle, col, el, oklch, row, text, text_input};
+use rune::{Color, Cx, El, Icon, TextStyle, col, el, icon, oklch, row, text, text_input};
+
+static SIDEBAR_ICON: Icon = Icon {
+    name: "griz-sidebar",
+    view: 16.0,
+    body: r#"<rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1" fill="none"/><path d="M6 3V13" stroke="currentColor" stroke-width="1"/>"#,
+};
+
+static SEARCH_ICON: Icon = Icon {
+    name: "griz-search",
+    view: 16.0,
+    body: r#"<circle cx="6.75" cy="6.75" r="4.25" stroke="currentColor" stroke-width="1.25" fill="none"/><path d="M10 10L13.5 13.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>"#,
+};
 
 pub(crate) struct Palette {
     pub bg: Color,
@@ -77,6 +89,33 @@ pub(crate) fn workspace_accent(state: &State) -> Color {
         .unwrap_or(oklch(0.78, 0.10, 155.0))
 }
 
+fn sidebar_toggle(state: &State, p: &Palette) -> El {
+    button_surface(
+        row()
+            .key("toggle-sidebar")
+            .role("button")
+            .label("Toggle sidebar")
+            .help(if state.sidebar_open {
+                "Hide sidebar"
+            } else {
+                "Show sidebar"
+            })
+            .focusable(true)
+            .size(p.control_height(), p.control_height())
+            .center()
+            .child(
+                icon(&SIDEBAR_ICON, 16.0)
+                    .key("sidebar-icon")
+                    .color(if state.sidebar_open { p.ink } else { p.muted }),
+            ),
+        crate::settings::WorkspaceButtonStyle::Soft,
+        p,
+    )
+    .on_press_tx(|s: &mut State, tx| {
+        s.act(crate::settings::Action::ToggleSidebar, tx);
+    })
+}
+
 pub fn view(state: &State, cx: &mut Cx<State>) -> El {
     let p = palette(&state.settings);
     let workspace_accent = state
@@ -99,11 +138,50 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .child(text("griz").font(p.title).color(p.ink))
         .child(el().grow(1.0))
         .child(
-            button("toggle-sidebar", "Sidebar", &p).on_press_tx(|s: &mut State, tx| {
-                s.act(crate::settings::Action::ToggleSidebar, tx);
-            }),
+            row()
+                .key("quick-open")
+                .role("button")
+                .label("Search workspaces and terminals")
+                .help("Open quick search")
+                .focusable(true)
+                .no_window_drag()
+                .grow(3.0)
+                .min_w(0.0)
+                .max_w(560.0)
+                .h(p.control_height())
+                .px(10.0)
+                .gap(8.0)
+                .center_y()
+                .radius(6.0)
+                .fill(p.ink.alpha(0.04))
+                .border(1.0, p.line)
+                .hover(p.ink.alpha(0.08))
+                .focus_ring(2.0, 2.0, p.accent)
+                .child(icon(&SEARCH_ICON, 16.0).key("search-icon").color(p.muted))
+                .child(
+                    text("Search workspaces and terminals…")
+                        .font(p.label)
+                        .color(p.muted)
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .truncate(),
+                )
+                .children(
+                    state
+                        .settings
+                        .chord(crate::settings::Action::QuickOpen)
+                        .map(|chord| {
+                            text(chord.label())
+                                .key("quick-open-shortcut")
+                                .font(p.label)
+                                .color(p.muted)
+                        }),
+                )
+                .on_press_tx(|s: &mut State, tx| {
+                    s.act(crate::settings::Action::QuickOpen, tx);
+                }),
         )
-        .child(button("open-settings", "Settings…", &p).on_press_tx(State::open_settings));
+        .child(el().grow(1.0));
 
     let mut workspaces = col()
         .key("workspace-list")
@@ -156,7 +234,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
             );
         }
     }
-    let sidebar = state.sidebar_open.then(|| {
+    let sidebar = if state.sidebar_open {
         col()
             .key("sidebar")
             .w(210.0_f32.max(p.label.size * 14.0))
@@ -167,8 +245,10 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
             .border_sides([0.0, 1.0, 0.0, 0.0], p.chrome_line)
             .child(
                 row()
+                    .key("workspace-controls")
                     .w_full()
                     .px(4.0)
+                    .gap(4.0)
                     .center_y()
                     .child(text("WORKSPACES").font(p.section).color(p.muted))
                     .child(el().grow(1.0))
@@ -179,19 +259,21 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                             .on_press_tx(|s: &mut State, tx| {
                                 s.act(crate::settings::Action::NewWorkspace, tx)
                             }),
-                    ),
+                    )
+                    .child(sidebar_toggle(state, &p)),
             )
             .child(workspaces)
             .child(crate::agents_ui::section(state, &p))
-            .child(
-                button("reconnect", "Reconnect", &p)
-                    .disabled(state.offline)
-                    .on_press_tx(|s: &mut State, tx| {
-                        s.connect();
-                        tx.blur();
-                    }),
-            )
-    });
+    } else {
+        col()
+            .key("sidebar-rail")
+            .w(p.control_height() + 24.0)
+            .h_full()
+            .padding(12.0)
+            .fill(p.panel)
+            .border_sides([0.0, 1.0, 0.0, 0.0], p.chrome_line)
+            .child(sidebar_toggle(state, &p))
+    };
 
     let mut tabs = row().key("terminal-tab-items").h_full().gap(4.0).center_y();
     if let Some(workspace) = state.workspace() {
@@ -304,16 +386,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     .px(12.0)
                     .gap(8.0)
                     .center_y()
-                    .child(tabs)
-                    .child(
-                        button("new-terminal", "+ Terminal", &p)
-                            .disabled(!state.ready() || state.workspace().is_none())
-                            .on_press_tx(|s: &mut State, tx| {
-                                if let Some(w) = s.workspace() {
-                                    s.open_dialog(Dialog::NewTerminal(w.id), tx);
-                                }
-                            }),
-                    ),
+                    .child(tabs),
             )
             .child(
                 col()
@@ -376,7 +449,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 .grow(1.0)
                 .min_h(0.0)
                 .w_full()
-                .children(sidebar)
+                .child(sidebar)
                 .child(terminal),
         )
         .children(dialog(state, &p, cx))

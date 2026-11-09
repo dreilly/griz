@@ -23,17 +23,14 @@ fn regular_buttons_share_the_soft_sample_in_both_themes_and_at_large_font_sizes(
                 WorkspaceButtonStyle::Soft
             );
             let mut rt = make_runtime(state, (1100.0, 720.0));
-            click(&mut rt, "open-settings");
+            open_settings(&mut rt);
             click(&mut rt, "settings-buttons");
             let soft = surface(&rt, "button-style-soft");
             assert_ne!(soft.0, Color::TRANSPARENT);
             assert_eq!(soft.1, 6.0);
             for key in [
                 "toggle-sidebar",
-                "open-settings",
                 "new-workspace",
-                "new-terminal",
-                "reconnect",
                 "settings-close",
                 "settings-buttons-reset",
                 "settings-appearance",
@@ -51,7 +48,7 @@ fn dialogs_context_menus_and_settings_actions_use_soft_without_losing_selected_s
         let (mut state, _) = mock();
         state.settings.theme = theme;
         let mut rt = make_runtime(state, (1100.0, 720.0));
-        let soft = surface(&rt, "open-settings");
+        let soft = surface(&rt, "new-workspace");
         click(&mut rt, "new-workspace");
         assert_eq!(surface(&rt, "dialog-cancel"), soft);
         assert_eq!(surface(&rt, "dialog-submit"), soft);
@@ -64,7 +61,7 @@ fn dialogs_context_menus_and_settings_actions_use_soft_without_losing_selected_s
         assert_eq!(surface(&rt, "workspace-menu-close"), soft);
         rt.key(rune::Key::Escape.into());
         rt.frame(0.0);
-        click(&mut rt, "open-settings");
+        open_settings(&mut rt);
         assert_eq!(surface(&rt, "settings-font-1"), soft);
         assert_eq!(surface(&rt, "settings-appearance-reset"), soft);
         let inactive_theme = if theme == Theme::Dark {
@@ -94,14 +91,14 @@ fn empty_state_style_overrides_do_not_change_the_shared_default_for_regular_acti
     let (mut state, _) = mock();
     state.settings.workspace_button_style = WorkspaceButtonStyle::Accent;
     let mut rt = make_runtime(state, (1100.0, 720.0));
-    click(&mut rt, "open-settings");
+    open_settings(&mut rt);
     click(&mut rt, "settings-buttons");
     assert_eq!(
-        surface(&rt, "open-settings"),
+        surface(&rt, "new-workspace"),
         surface(&rt, "button-style-soft")
     );
     assert_ne!(
-        surface(&rt, "open-settings").0,
+        surface(&rt, "new-workspace").0,
         surface(&rt, "button-style-accent").0
     );
 }

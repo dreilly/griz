@@ -27,7 +27,7 @@ fn agent_state() -> (State, Receiver<Request>) {
 }
 
 #[test]
-fn agents_are_listed_across_workspaces_below_workspaces_and_above_reconnect() {
+fn agents_are_listed_across_workspaces_below_workspaces_and_within_the_sidebar() {
     let (state, _) = agent_state();
     let rt = make_runtime(state, (1100.0, 720.0));
     for key in [
@@ -43,9 +43,9 @@ fn agents_are_listed_across_workspaces_below_workspaces_and_above_reconnect() {
     assert!(rt.find("agent-1").is_none());
     let (rect, _) = rt.presented("agents-section").unwrap();
     let (workspace, _) = rt.presented("workspace-list").unwrap();
-    let (reconnect, _) = rt.presented("reconnect").unwrap();
+    let (sidebar, _) = rt.presented("sidebar").unwrap();
     assert!(rect[1] >= workspace[1] + workspace[3]);
-    assert!(rect[1] + rect[3] <= reconnect[1]);
+    assert!(rect[1] + rect[3] <= sidebar[1] + sidebar[3]);
     let count = rt
         .elements()
         .iter()
@@ -152,17 +152,17 @@ fn stale_clicks_and_disconnected_agents_do_not_send_commands() {
 }
 
 #[test]
-fn agents_section_scrolls_and_stays_above_reconnect_in_small_windows_at_large_fonts() {
+fn agents_section_scrolls_and_fits_the_sidebar_in_small_windows_at_large_fonts() {
     let (mut state, _) = agent_state();
     state.settings.font_size = 22.0;
     let rt = make_runtime(state, (640.0, 480.0));
     let (section, _) = rt.presented("agents-section").unwrap();
     let (list, _) = rt.presented("agent-list").unwrap();
-    let (reconnect, _) = rt.presented("reconnect").unwrap();
+    let (sidebar, _) = rt.presented("sidebar").unwrap();
     assert!(list[3] > 0.0);
     assert!(list[1] >= section[1]);
-    assert!(section[1] + section[3] <= reconnect[1] + 0.1);
-    assert!(reconnect[1] + reconnect[3] <= 480.0);
+    assert!(section[1] + section[3] <= sidebar[1] + sidebar[3] + 0.1);
+    assert!(sidebar[1] + sidebar[3] <= 480.0);
 }
 
 #[test]

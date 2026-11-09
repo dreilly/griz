@@ -13,7 +13,7 @@ fn primary(key: Key) -> KeyEvent {
 }
 
 #[test]
-fn settings_open_by_button_or_command_comma_and_never_type_into_shell() {
+fn settings_open_by_palette_or_command_comma_and_never_type_into_shell() {
     let (state, outgoing) = mock();
     let mut rt = make_runtime(state, (1100.0, 720.0));
     click(&mut rt, "terminal");
@@ -31,7 +31,7 @@ fn settings_open_by_button_or_command_comma_and_never_type_into_shell() {
     }
     click(&mut rt, "settings-close");
     assert!(!rt.state.settings_open);
-    click(&mut rt, "open-settings");
+    open_settings(&mut rt);
     assert!(rt.state.settings_open);
     rt.key(Key::Escape.into());
     rt.frame(0.0);
@@ -51,7 +51,7 @@ fn appearance_is_live_reflows_the_pty_and_can_be_reset() {
     let mut rt = make_runtime(state, (1100.0, 720.0));
     rt.frame(0.0);
     let original_grid = rt.state.grid;
-    click(&mut rt, "open-settings");
+    open_settings(&mut rt);
     commands(&outgoing);
     click(&mut rt, "settings-size-up");
     assert_eq!(rt.state.settings.font_size, 15.0);
@@ -93,7 +93,7 @@ fn workspace_button_gallery_selects_saves_and_applies_styles_without_creating_wo
     empty.terminal = None;
     state.apply(empty);
     let mut rt = make_runtime(state, (1100.0, 720.0));
-    click(&mut rt, "open-settings");
+    open_settings(&mut rt);
     click(&mut rt, "settings-buttons");
     commands(&outgoing);
     for style in WorkspaceButtonStyle::ALL {
@@ -153,7 +153,7 @@ fn workspace_button_gallery_selects_saves_and_applies_styles_without_creating_wo
 #[test]
 fn workspace_button_gallery_is_usable_disconnected_and_in_a_small_window() {
     let mut rt = make_runtime(State::default(), (640.0, 420.0));
-    click(&mut rt, "open-settings");
+    open_settings(&mut rt);
     click(&mut rt, "settings-buttons");
     for font_size in [14.0, 28.0] {
         rt.update(|s, _| s.settings.font_size = font_size);
@@ -200,7 +200,7 @@ fn every_workspace_button_style_round_trips_without_affecting_other_preferences(
 fn shortcut_recording_conflicts_clear_reset_and_search() {
     let (state, outgoing) = mock();
     let mut rt = make_runtime(state, (1100.0, 720.0));
-    click(&mut rt, "open-settings");
+    open_settings(&mut rt);
     click(&mut rt, "settings-shortcuts");
     commands(&outgoing);
     click(&mut rt, "shortcut-record-sidebar.toggle");
@@ -263,6 +263,8 @@ fn custom_shortcuts_dispatch_actions_without_leaking_bytes() {
             .iter()
             .any(|(_, c)| matches!(c, Command::Input { .. }))
     );
+    // Let the expanded sidebar finish leaving before clicking its collapsed toggle.
+    command_palette_tests::settle(&mut rt);
     // App shortcuts must not steal keys from a workspace-name field.
     click(&mut rt, "toggle-sidebar");
     click(&mut rt, "new-workspace");
@@ -275,7 +277,7 @@ fn custom_shortcuts_dispatch_actions_without_leaking_bytes() {
 #[test]
 fn settings_are_available_disconnected_and_fit_a_small_window() {
     let mut rt = make_runtime(State::default(), (640.0, 420.0));
-    click(&mut rt, "open-settings");
+    open_settings(&mut rt);
     assert!(rt.state.settings_open);
     let ([x, y, width, height], _) = rt.presented("settings-panel").unwrap();
     assert!(x >= 0.0 && y >= 0.0 && x + width <= 640.1 && y + height <= 420.1);
@@ -394,7 +396,7 @@ fn save_failure_is_visible_but_the_live_preference_still_applies() {
     let (mut state, _) = mock();
     state.prefs = Prefs::at(blocked_parent.join("prefs.json"));
     let mut rt = make_runtime(state, (1100.0, 720.0));
-    click(&mut rt, "open-settings");
+    open_settings(&mut rt);
     click(&mut rt, "settings-size-up");
     assert_eq!(rt.state.settings.font_size, 15.0);
     assert!(rt.state.settings_error.is_some());

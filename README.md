@@ -225,7 +225,7 @@ efficient frame encoding can be added behind the same ownership boundary.
 
 ## Settings and keyboard shortcuts
 
-Open **Settings…** with **⌘,**, the titlebar Settings button, or the macOS app
+Open **Settings…** with **⌘,**, **Open Settings…** in the command palette, or the macOS app
 menu. Settings opens as an in-app modal panel, including while disconnected.
 
 - **Appearance:** choose Menlo, Monaco, or the system monospace terminal font;
@@ -261,7 +261,12 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
 
 ### Quick navigation and command palette
 
-- **⌘P** opens **Jump To** across every workspace and terminal tab. Search workspace
+- Click the wide **search control** in the titlebar or press **⌘P** to open
+  **Jump To** across every workspace and terminal tab. The control shows the current
+  shortcut, follows rebindings, and remains clickable if the shortcut is disabled.
+  The sidebar icon beside the workspace **+** button collapses the sidebar to a thin
+  left-hand column containing just the toggle; click it again to reopen.
+  Search workspace
   names, terminal numbers, and each terminal’s **current** shell directory, including
   inactive tabs. Terminal rows use their own directory, not the workspace’s selected
   tab’s automatic name or the terminal’s starting directory. Directory changes update

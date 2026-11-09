@@ -2,6 +2,8 @@
 mod agents;
 #[path = "tests/buttons.rs"]
 mod buttons;
+#[path = "tests/chrome.rs"]
+mod chrome;
 #[path = "tests/command_palette.rs"]
 mod command_palette_tests;
 #[path = "tests/font_and_close.rs"]
@@ -113,6 +115,13 @@ fn click(rt: &mut Runtime<State>, key: &str) {
     for _ in 0..60 {
         rt.frame(1.0 / 60.0);
     }
+}
+
+fn open_settings(rt: &mut Runtime<State>) {
+    command_palette_tests::open(rt, true);
+    command_palette_tests::press(rt, rune::Key::Text("settings".into()));
+    command_palette_tests::settle(rt);
+    click(rt, "palette-settings");
 }
 
 fn commands(outgoing: &Receiver<Request>) -> Vec<(u64, Command)> {
@@ -381,7 +390,7 @@ fn rune_renderer_places_styled_and_wide_cells_on_the_grid() {
 fn typing_works_after_terminal_or_non_selection_toolbar_clicks() {
     let (state, outgoing) = mock();
     let mut rt = make_runtime(state, (1000.0, 680.0));
-    for target in ["terminal", "reconnect", "toggle-sidebar"] {
+    for target in ["terminal", "toggle-sidebar"] {
         click(&mut rt, target);
         commands(&outgoing);
         rt.key(rune::Key::Text("x".into()).into());
@@ -711,7 +720,7 @@ fn empty_workspace_button_is_centered_scales_and_disappears_when_a_workspace_ope
             "terminal-card",
             "terminal-header",
             "terminal-status",
-            "new-terminal",
+            "quick-open",
         ] {
             assert!(
                 rt.find(key).is_some(),
@@ -851,7 +860,10 @@ fn terminal_dialog_sends_its_own_directory_and_final_terminal_close_requires_con
     let (state, outgoing) = mock();
     let mut rt = make_runtime(state, (1000.0, 680.0));
     commands(&outgoing);
-    click(&mut rt, "new-terminal");
+    command_palette_tests::open(&mut rt, true);
+    command_palette_tests::press(&mut rt, rune::Key::Text("New terminal in directory".into()));
+    command_palette_tests::settle(&mut rt);
+    click(&mut rt, "palette-terminal-directory");
     click(&mut rt, "dialog-input");
     rt.key(rune::Key::Text("/tmp/something-else".into()).into());
     rt.frame(0.0);
@@ -935,8 +947,12 @@ fn empty_workspace_and_small_window_remain_usable() {
     empty.terminal = None;
     rt.update(|s, _| s.apply(empty));
     rt.frame(0.0);
-    assert!(rt.find("new-terminal").is_some());
+    assert!(rt.find("quick-open").is_some());
+    assert!(rt.find("new-terminal").is_none());
     assert!(rt.find("close-terminal-1").is_none());
+    command_palette_tests::open(&mut rt, true);
+    assert!(rt.find("palette-action-terminal.new").is_some());
+    assert!(rt.find("palette-terminal-directory").is_some());
     assert!(rt.state.status.starts_with("No terminals"));
 }
 

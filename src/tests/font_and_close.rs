@@ -25,14 +25,14 @@ fn font_size_scales_workspace_chrome_settings_and_dialogs_not_just_the_terminal(
     let mut rt = runtime((1100.0, 720.0));
     let title_height = text_height(&rt, "griz");
     let workspace_height = text_height(&rt, "Daily");
-    let button_height = text_height(&rt, "Sidebar");
-    click(&mut rt, "open-settings");
+    let button_height = text_height(&rt, "Search workspaces and terminals…");
+    open_settings(&mut rt);
     let settings_height = text_height(&rt, "Settings");
     let label_height = text_height(&rt, "App font size");
     click(&mut rt, "settings-size-up");
     assert!(text_height(&rt, "griz") > title_height);
     assert!(text_height(&rt, "Daily") > workspace_height);
-    assert!(text_height(&rt, "Sidebar") > button_height);
+    assert!(text_height(&rt, "Search workspaces and terminals…") > button_height);
     assert!(text_height(&rt, "Settings") > settings_height);
     assert!(text_height(&rt, "App font size") > label_height);
     click(&mut rt, "settings-close");
@@ -58,7 +58,7 @@ fn command_plus_equal_and_minus_work_in_settings_and_focused_fields_and_persist(
     rt.key(command('-', false));
     rt.frame(0.0);
     assert_eq!(rt.state.settings.font_size, 15.0);
-    click(&mut rt, "open-settings");
+    open_settings(&mut rt);
     rt.key(command('+', true));
     rt.frame(0.0);
     assert_eq!(rt.state.settings.font_size, 16.0);
@@ -152,7 +152,7 @@ fn final_terminal_confirmation_captures_the_terminal_id_and_never_retargets() {
 fn command_w_is_safe_in_settings_and_with_no_active_terminal() {
     let (state, outgoing) = mock();
     let mut rt = make_runtime(state, (1100.0, 720.0));
-    click(&mut rt, "open-settings");
+    open_settings(&mut rt);
     commands(&outgoing);
     rt.key(command('w', false));
     rt.frame(0.0);
