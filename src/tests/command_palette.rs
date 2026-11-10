@@ -54,6 +54,175 @@ pub(super) fn open(rt: &mut Runtime<State>, commands: bool) {
 }
 
 #[test]
+fn single_terminal_workspace_has_one_result_for_empty_name_and_directory_searches() {
+    for query in ["", "daily", "/tmp"] {
+        let (mut state, outgoing) = mock();
+        let snapshot = state.snapshot.as_mut().unwrap();
+        snapshot.workspaces.truncate(1);
+        snapshot.workspaces[0].terminals.truncate(1);
+        snapshot.workspaces[0].tabs.truncate(1);
+        let mut rt = make_runtime(state, (1100.0, 720.0));
+        open(&mut rt, false);
+        if !query.is_empty() {
+            press(&mut rt, Key::Text(query.into()));
+        }
+        assert!(rt.find("palette-workspace-1").is_some(), "{query}");
+        assert!(rt.find("palette-terminal-1").is_none(), "{query}");
+        commands(&outgoing);
+        // Wrapping through a one-result list must still activate the workspace.
+        press(&mut rt, Key::Down);
+        press(&mut rt, Key::Enter);
+        let sent = commands(&outgoing);
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(
+            sent[0].1,
+            Command::SelectWorkspace { workspace_id: 1 }
+        ));
+    }
+}
+
+#[test]
+fn single_terminal_remains_searchable_by_terminal_specific_terms() {
+    let (mut state, outgoing) = mock();
+    let snapshot = state.snapshot.as_mut().unwrap();
+    snapshot.workspaces.truncate(1);
+    snapshot.workspaces[0].terminals.truncate(1);
+    snapshot.workspaces[0].tabs.truncate(1);
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    open(&mut rt, false);
+    commands(&outgoing);
+    press(&mut rt, Key::Text("daily terminal 1".into()));
+    assert!(rt.find("palette-workspace-1").is_none());
+    assert!(rt.find("palette-terminal-1").is_some());
+    press(&mut rt, Key::Enter);
+    let sent = commands(&outgoing);
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(
+        sent[0].1,
+        Command::SelectTerminal { terminal_id: 1 }
+    ));
+}
+
+#[test]
+fn redundant_results_are_collapsed_per_workspace_not_for_multi_terminal_workspaces() {
+    let (state, _) = mock();
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    open(&mut rt, false);
+    assert!(rt.find("palette-workspace-1").is_some());
+    assert!(rt.find("palette-terminal-1").is_some());
+    assert!(rt.find("palette-terminal-2").is_some());
+    assert!(rt.find("palette-workspace-2").is_some());
+    assert!(rt.find("palette-terminal-3").is_none());
+
+    // Catalog updates must remove the redundant terminal without reopening search.
+    let mut updated = rt.state.snapshot.clone().unwrap();
+    updated.workspaces[0].terminals.truncate(1);
+    updated.workspaces[0].tabs.truncate(1);
+    rt.update(|s, _| s.apply(updated));
+    rt.frame(0.0);
+    assert!(rt.find("palette-workspace-1").is_some());
+    assert!(rt.find("palette-terminal-1").is_none());
+    assert!(rt.find("palette-terminal-2").is_none());
+}
+
+#[test]
+fn terminal_results_are_indented_with_continuous_branches_that_stop_at_the_last_child() {
+    for (width, height, font_size, theme) in [
+        (1100.0, 720.0, 14.0, settings::Theme::Dark),
+        (640.0, 720.0, 14.0, settings::Theme::Midnight),
+        (640.0, 420.0, 28.0, settings::Theme::Dark),
+    ] {
+        let (mut state, outgoing) = mock();
+        state.settings.font_size = font_size;
+        state.settings.theme = theme;
+        let mut rt = make_runtime(state, (width, height));
+        open(&mut rt, false);
+        let ([px, py, pw, ph], _) = rt.presented("palette-workspace-1").unwrap();
+        let ([x1, y1, w1, h1], _) = rt.presented("palette-terminal-1").unwrap();
+        let ([x2, y2, w2, _], _) = rt.presented("palette-terminal-2").unwrap();
+        assert!((x1 - px - 24.0).abs() < 0.1);
+        assert!((x2 - x1).abs() < 0.1);
+        assert!((pw - w1 - 24.0).abs() < 0.1);
+        assert!((w1 - w2).abs() < 0.1);
+        assert!(y1 >= py + ph && y2 >= y1 + h1);
+        let ([bx1, by1, bw1, bh1], _) = rt.presented("palette-branch-elbow-1").unwrap();
+        let ([bx2, by2, bw2, bh2], _) = rt.presented("palette-branch-elbow-2").unwrap();
+        let ([cx, cy, cw, ch], _) = rt.presented("palette-branch-continuation-1").unwrap();
+        assert!((bx1 - px - 12.0).abs() < 0.1);
+        assert!((bx2 - bx1).abs() < 0.1);
+        assert!((bx1 + bw1 - x1).abs() < 0.1);
+        assert!((bx2 + bw2 - x2).abs() < 0.1);
+        assert!((by1 - (py + ph)).abs() < 0.1);
+        assert!((cy - (by1 + bh1)).abs() < 0.1);
+        assert!((by2 - (cy + ch)).abs() < 0.1);
+        assert!((cx - bx1).abs() < 0.1 && cw == 1.0);
+        assert!(by2 + bh2 < y2 + h1);
+        assert!(rt.find("palette-branch-continuation-2").is_none());
+        assert!(rt.find("palette-branch-3").is_none());
+        // Bring the child into view before clicking in the small, large-font case.
+        press(&mut rt, Key::Down);
+        press(&mut rt, Key::Down);
+        settle(&mut rt);
+        commands(&outgoing);
+        click(&mut rt, "palette-terminal-2");
+        let sent = commands(&outgoing);
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [(_, Command::SelectTerminal { terminal_id: 2 })]
+            ),
+            "unexpected commands at {width}x{height}: {sent:?}"
+        );
+    }
+}
+
+#[test]
+fn filtered_workspace_results_stay_grouped_even_when_workspace_scores_outrank_terminals() {
+    let (mut state, _) = mock();
+    let workspace = &mut state.snapshot.as_mut().unwrap().workspaces[1];
+    let mut terminal = workspace.terminals[0].clone();
+    terminal.id = 4;
+    workspace.terminals.push(terminal);
+    workspace.tabs.push(tab(4));
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    open(&mut rt, false);
+    press(&mut rt, Key::Text("/tmp".into()));
+    let keys = [
+        "palette-workspace-1",
+        "palette-terminal-1",
+        "palette-terminal-2",
+        "palette-workspace-2",
+        "palette-terminal-3",
+        "palette-terminal-4",
+    ];
+    let mut bottom = 0.0;
+    for key in keys {
+        let ([_, y, _, h], _) = rt.presented(key).unwrap();
+        assert!(y >= bottom, "{key} is out of workspace order");
+        bottom = y + h;
+    }
+    assert!(rt.find("palette-branch-continuation-2").is_none());
+    assert!(rt.find("palette-branch-continuation-3").is_some());
+    assert!(rt.find("palette-branch-continuation-4").is_none());
+}
+
+#[test]
+fn terminal_only_matches_do_not_draw_branches_to_filtered_out_workspaces() {
+    let (state, _) = mock();
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    open(&mut rt, false);
+    press(&mut rt, Key::Text("terminal".into()));
+    let ([list_x, _, _, _], _) = rt.presented("palette-results").unwrap();
+    for id in 1..=3 {
+        assert!(rt.find(&format!("palette-branch-{id}")).is_none());
+        let ([x, _, _, _], _) = rt.presented(&format!("palette-terminal-{id}")).unwrap();
+        assert!((x - list_x).abs() < 0.1);
+    }
+    assert!(rt.find("palette-workspace-1").is_none());
+    assert!(rt.find("palette-workspace-2").is_none());
+}
+
+#[test]
 fn automatic_workspace_names_do_not_replace_each_terminals_live_directory() {
     let (mut state, outgoing) = mock();
     let snapshot = state.snapshot.as_mut().unwrap();

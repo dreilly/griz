@@ -288,8 +288,59 @@ fn entries(state: &State) -> Vec<Entry> {
             score(&searchable, &query).map(|score| (score, entry))
         })
         .collect();
+    // A single-terminal workspace and its terminal are the same destination. Prefer
+    // the workspace when both match, but keep the terminal for terminal-only queries.
+    let single_terminal_workspaces: Vec<_> = state
+        .snapshot
+        .iter()
+        .flat_map(|snapshot| &snapshot.workspaces)
+        .filter(|workspace| workspace.terminals.len() == 1)
+        .map(|workspace| workspace.id)
+        .filter(|id| {
+            ranked
+                .iter()
+                .any(|(_, entry)| entry.target == Target::Workspace(*id))
+        })
+        .collect();
+    ranked.retain(|(_, entry)| {
+        !matches!(entry.target, Target::Terminal(workspace_id, _)
+            if single_terminal_workspaces.contains(&workspace_id))
+    });
     ranked.sort_by_key(|entry| std::cmp::Reverse(entry.0));
-    ranked.into_iter().map(|(_, entry)| entry).collect()
+    let entries = ranked.into_iter().map(|(_, entry)| entry).collect();
+    if state.palette.mode == Some(Mode::Navigate) {
+        group_navigation_entries(entries)
+    } else {
+        entries
+    }
+}
+
+// Rank groups by their best match, with the workspace first and its matching
+// terminals immediately below it. Never draw a branch across another workspace.
+fn group_navigation_entries(entries: Vec<Entry>) -> Vec<Entry> {
+    let mut groups: Vec<(WorkspaceId, Vec<Entry>)> = Vec::new();
+    for entry in entries {
+        let workspace_id = match entry.target {
+            Target::Workspace(id) | Target::Terminal(id, _) => id,
+            _ => unreachable!("navigation entries must target a workspace or terminal"),
+        };
+        let index = groups
+            .iter()
+            .position(|(id, _)| *id == workspace_id)
+            .unwrap_or_else(|| {
+                groups.push((workspace_id, Vec::new()));
+                groups.len() - 1
+            });
+        if matches!(entry.target, Target::Workspace(_)) {
+            groups[index].1.insert(0, entry);
+        } else {
+            groups[index].1.push(entry);
+        }
+    }
+    groups
+        .into_iter()
+        .flat_map(|(_, entries)| entries)
+        .collect()
 }
 
 fn selected_index(state: &State, entries: &[Entry]) -> Option<usize> {
@@ -431,40 +482,76 @@ pub(crate) fn panel(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
     for (index, entry) in entries.iter().enumerate() {
         let target = entry.target;
         let active = selected == Some(index);
-        list = list.child(
-            row()
-                .key(entry.key())
-                .role("option")
-                .label(&entry.title)
-                .w_full()
-                .padding(10.0)
-                .gap(12.0)
-                .center_y()
-                .radius(6.0)
-                .fill(if active {
-                    p.accent.alpha(0.15)
-                } else {
-                    Color::TRANSPARENT
-                })
-                .hover(p.ink.alpha(0.07))
-                .disabled(!entry.enabled)
-                .preserve_focus_on_press(true)
-                .on_press_tx(move |s: &mut State, tx| activate(s, target, tx))
+        let parent = match target {
+            Target::Terminal(workspace_id, terminal_id) => entries
+                .iter()
+                .any(|entry| entry.target == Target::Workspace(workspace_id))
+                .then_some((workspace_id, terminal_id)),
+            _ => None,
+        };
+        let indent = if parent.is_some() { 24.0 } else { 0.0 };
+        let item = row()
+            .key(entry.key())
+            .role("option")
+            .label(&entry.title)
+            .w(list_width - indent)
+            .padding(10.0)
+            .gap(12.0)
+            .center_y()
+            .radius(6.0)
+            .fill(if active {
+                p.accent.alpha(0.15)
+            } else {
+                Color::TRANSPARENT
+            })
+            .hover(p.ink.alpha(0.07))
+            .disabled(!entry.enabled)
+            .preserve_focus_on_press(true)
+            .on_press_tx(move |s: &mut State, tx| activate(s, target, tx))
+            .child(
+                col()
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .gap(3.0)
+                    .child(
+                        text(&entry.title)
+                            .font(p.label)
+                            .color(if active { p.accent } else { p.ink })
+                            .truncate(),
+                    )
+                    .child(text(&entry.detail).font(p.label).color(p.muted).truncate()),
+            )
+            .child(text(&entry.shortcut).font(p.label).color(p.muted));
+        if let Some((workspace_id, terminal_id)) = parent {
+            let last_child = !entries.get(index + 1).is_some_and(
+                |entry| matches!(entry.target, Target::Terminal(id, _) if id == workspace_id),
+            );
+            // Align the elbow with the title, and bridge the list's four-point gap
+            // so siblings share one continuous stem. The final branch stops here.
+            let branch_y = 10.0 + p.label.line_px() * 0.5;
+            let line = p.muted.alpha(0.35);
+            let mut branch = el()
+                .key(format!("palette-branch-{terminal_id}"))
+                .w(indent)
+                .self_stretch()
                 .child(
-                    col()
-                        .grow(1.0)
-                        .min_w(0.0)
-                        .gap(3.0)
-                        .child(
-                            text(&entry.title)
-                                .font(p.label)
-                                .color(if active { p.accent } else { p.ink })
-                                .truncate(),
-                        )
-                        .child(text(&entry.detail).font(p.label).color(p.muted).truncate()),
-                )
-                .child(text(&entry.shortcut).font(p.label).color(p.muted)),
-        );
+                    el().key(format!("palette-branch-elbow-{terminal_id}"))
+                        .absolute(12.0, -4.0)
+                        .size(12.0, branch_y + 4.0)
+                        .border_sides([0.0, 0.0, 1.0, 1.0], line),
+                );
+            if !last_child {
+                branch = branch.child(
+                    el().key(format!("palette-branch-continuation-{terminal_id}"))
+                        .pin(Some(12.0), Some(branch_y), None, Some(0.0))
+                        .w(1.0)
+                        .fill(line),
+                );
+            }
+            list = list.child(row().w_full().child(branch).child(item));
+        } else {
+            list = list.child(item);
+        }
     }
     if entries.is_empty() {
         list = list.child(
