@@ -16,6 +16,8 @@ mod navigation_previews;
 mod settings_tests;
 #[path = "tests/splits.rs"]
 mod splits;
+#[path = "tests/terminal_graphics.rs"]
+mod terminal_graphics;
 #[path = "tests/workspace_accents.rs"]
 mod workspace_accents;
 #[path = "tests/workspace_labels.rs"]

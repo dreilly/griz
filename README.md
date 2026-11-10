@@ -359,6 +359,9 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 - Optionally named, renameable workspaces and independently running terminal tabs.
 - Real local shells with input, cursor, ANSI/truecolor backgrounds and text,
   bold/italic/underline, Unicode cells, and alternate-screen state.
+- Cell-fitted block elements and solid light/heavy box-drawing strokes (including
+  mixed-weight junctions and half-line caps), so TUI logos and borders join without
+  font-leading gaps. The same geometry scales into navigation previews.
 - Window/sidebar resize updates libghostty and every visible pane's PTY (SIGWINCH).
 - Enter, Backspace, Tab, arrows (including application cursor mode), common navigation
   and function keys, Ctrl-C/Ctrl-D, clipboard paste, and basic IME preedit/commit.
@@ -371,6 +374,8 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 - No scrollback UI, selection/copy, mouse reporting, images, hyperlinks,
   advanced terminal keyboard protocols, or full font/glyph shaping.
 - Fixed-cell monospace rendering, not Ghostty's full renderer; basic shell/TUI use is the target.
+  Dashed, double-line, rounded, and diagonal box drawing still uses the selected font.
+  Shade blocks use uniform 25/50/75% foreground coverage rather than stippled patterns.
 - Full snapshots, not dirty-cell deltas. Limits: 16 workspaces, 64 terminals total,
   16 clients, eight panes per tab, 300 × 120 cells per grid, 256 KiB per input/paste,
   and 16 MiB per IPC message.

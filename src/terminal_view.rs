@@ -6,6 +6,8 @@ use crate::{
 use griz_protocol::{Screen, TerminalId};
 use rune::{Color, El, Span, TextStyle, el, text};
 
+mod graphics;
+
 pub const PAD: f32 = 12.0;
 
 pub fn color([r, g, b]: [u8; 3]) -> Color {
@@ -191,6 +193,27 @@ fn screen_grid(
         }
         for (x, cell) in row.iter().enumerate() {
             if cell.width == 0 || cell.text.trim().is_empty() && !cell.underline {
+                continue;
+            }
+            let width = f32::from(cell.width) * cell_width;
+            if let Some(mut graphic) =
+                graphics::cell(&cell.text, width, cell_height, color(cell.fg))
+            {
+                if cell.underline {
+                    // Graphics bypass text shaping, so retain their underline explicitly.
+                    let thickness = (settings.font_size / 14.0).min(cell_height);
+                    graphic = graphic.child(
+                        el().key("terminal-graphic-underline")
+                            .size(width, thickness)
+                            .fill(color(cell.fg))
+                            .absolute(0.0, cell_height - thickness),
+                    );
+                }
+                grid = grid.child(
+                    graphic
+                        .key(format!("terminal-graphic-{x}-{y}"))
+                        .absolute(x as f32 * cell_width, y as f32 * cell_height),
+                );
                 continue;
             }
             let mut glyph = text(cell.text.clone())
