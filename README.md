@@ -149,8 +149,10 @@ used or shipped.
 Reports retain **Working**, **Waiting** (protocol `blocked`), **Error**,
 **Done**, or **Idle** status on individual cards without aggregate status headings.
 Working cards have a thin, gently pulsing pale-blue gradient outline; Done cards
-have a steady blue outline. Only the outline animates, and Reduce Motion keeps
-it still. Status remains available in each card's accessibility label. Record titles, messages, progress, and waiting reasons
+have a steady blue outline. A newly observed completion sends one soft blue wave
+left to right across that card, fading out in 1.1 seconds. Already-completed records
+on attachment/reconnection do not replay it. Reduce Motion skips the wave and
+keeps the working outline still. Status remains available in each card's accessibility label. Record titles, messages, progress, and waiting reasons
 come from the program. Click a record to jump to its exact terminal pane and
 acknowledge its notification. Filled dots and a count mark unacknowledged
 completion, input requests, or failures. Focusing a terminal through its tab,

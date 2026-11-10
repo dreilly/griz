@@ -3,6 +3,69 @@ use crate::{Command, State, ui::Palette, workspace_ui::accent_color};
 use griz_protocol::{AgentStatus, ProgramStatusKind, ProgramStatusRecord, TerminalId, WorkspaceId};
 use rune::{Color, El, col, el, oklch, row, text};
 
+const COMPLETION_FADE: &[rune::Beat] = &[
+    rune::Beat::new(0.0).opacity(1.0),
+    rune::Beat::new(1.1).opacity(0.0),
+];
+
+pub(crate) type CompletionSweeps =
+    std::collections::HashMap<(TerminalId, String, u64), CompletionSweep>;
+
+pub(crate) struct CompletionSweep {
+    offset: rune::Tween<[f32; 2]>,
+    opacity: rune::Tween<f32>,
+}
+
+/// Animate only a completion observed on this live connection, never a historical
+/// Done record on attachment, reconnection, or a replacement shell/core.
+pub(crate) fn update_completions(state: &mut State, next: &griz_protocol::ViewState) {
+    let Some(previous) = state
+        .snapshot
+        .as_ref()
+        .filter(|old| state.online && old.core_pid == next.core_pid)
+    else {
+        state.completion_sweeps.clear();
+        return;
+    };
+    let mut present = std::collections::HashSet::new();
+    for terminal in next.workspaces.iter().flat_map(|w| &w.terminals) {
+        for agent in &terminal.agents {
+            if agent.record.status != AgentStatus::Done {
+                continue;
+            }
+            let key = (terminal.id, agent.record.id.clone(), agent.generation);
+            present.insert(key.clone());
+            let transitioned = previous
+                .workspaces
+                .iter()
+                .flat_map(|w| &w.terminals)
+                .find(|t| t.id == terminal.id)
+                .and_then(|t| {
+                    t.agents.iter().find(|a| {
+                        a.record.id == agent.record.id && a.generation == agent.generation
+                    })
+                })
+                .is_some_and(|old| {
+                    old.record.status != AgentStatus::Done
+                        && agent.record.revision > old.record.revision
+                });
+            if transitioned {
+                let duration = std::time::Duration::from_millis(1100);
+                state.completion_sweeps.insert(
+                    key,
+                    CompletionSweep {
+                        offset: rune::Tween::linear([-76.0, 0.0], [240.0, 0.0], duration),
+                        opacity: rune::Tween::linear(0.30, 0.0, duration),
+                    },
+                );
+            }
+        }
+    }
+    state
+        .completion_sweeps
+        .retain(|key, _| present.contains(key));
+}
+
 fn status_label(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Idle => "Idle",
@@ -201,6 +264,32 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
                     outline.border(1.0, blue.alpha(0.85))
                 };
                 entry = entry.child(outline);
+            }
+            if let Some(sweep) =
+                state
+                    .completion_sweeps
+                    .get(&(terminal_id, record.id.clone(), generation))
+            {
+                // Non-interactive overlay: clipping keeps the wave inside this card.
+                // Tween sources survive view rebuilds/remounts, so a read receipt or
+                // sidebar toggle cannot restart a completed sweep.
+                entry = entry.child(
+                    el().key(format!("{key}-completion-clip"))
+                        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                        .clip_rounded(6.0)
+                        .sequence(rune::Sequence::new(COMPLETION_FADE))
+                        .child(
+                            el().key(format!("{key}-completion-sweep"))
+                                .pin(Some(0.0), Some(0.0), None, Some(0.0))
+                                .w(76.0)
+                                .linear_gradient(
+                                    std::f32::consts::FRAC_PI_2,
+                                    [(0.0, blue.alpha(0.0)), (0.65, blue), (1.0, blue.alpha(0.0))],
+                                )
+                                .live_offset(&sweep.offset)
+                                .live_opacity(&sweep.opacity),
+                        ),
+                );
             }
             if !detail.is_empty() {
                 entry = entry.child(text(detail).font(p.label).color(p.muted).truncate());

@@ -56,6 +56,7 @@ struct State {
     settings_error: Option<String>,
     shortcut_search: TextEdit,
     palette: command_palette::PaletteState,
+    completion_sweeps: agents_ui::CompletionSweeps,
     pane_sizes: HashMap<TerminalId, (f32, f32)>,
     pane_grids: HashMap<TerminalId, (u16, u16)>,
 }
@@ -85,6 +86,7 @@ impl Default for State {
             settings_error: None,
             shortcut_search: TextEdit::new(""),
             palette: command_palette::PaletteState::default(),
+            completion_sweeps: Default::default(),
             pane_sizes: HashMap::new(),
             pane_grids: HashMap::new(),
         }
@@ -448,6 +450,7 @@ impl State {
         if self.pending.is_some_and(|serial| snapshot.ack < serial) {
             return;
         }
+        agents_ui::update_completions(self, &snapshot);
         let selection_changed = self.pending.is_some()
             || !self.online
             || self.active_terminal() != snapshot.active_terminal;

@@ -338,11 +338,86 @@ fn agent_cards_replace_group_headings_with_border_only_motion() {
     assert_eq!(inspect(&rt, "agent-2").opacity, card.opacity);
     assert_eq!(inspect(&rt, "agent-2").rect, card.rect);
     assert_eq!(inspect(&rt, "agent-3-status-border").opacity, done.opacity);
-    rt.reduced_motion = true;
+    rt.set_system_reduced_motion(true);
     rt.frame(1.0 / 60.0);
     let still = inspect(&rt, "agent-2-status-border").opacity;
     for _ in 0..84 {
         rt.frame(1.0 / 60.0);
     }
     assert_eq!(inspect(&rt, "agent-2-status-border").opacity, still);
+}
+
+#[test]
+fn completion_sweeps_only_live_transitions_and_keeps_other_agents_untouched() {
+    let (mut state, _) = agent_state();
+    assert!(state.completion_sweeps.is_empty());
+    let mut next = state.snapshot.clone().unwrap();
+    next.workspaces[0].terminals[1].agents[0].record.status = AgentStatus::Done;
+    next.workspaces[0].terminals[1].agents[0].record.revision = 5;
+    state.apply(next.clone());
+    assert_eq!(state.completion_sweeps.len(), 1);
+    assert!(state.completion_sweeps.contains_key(&(2, String::new(), 1)));
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    rt.frame(0.0);
+    let sweep = |rt: &Runtime<State>| {
+        rt.elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("agent-2-completion-sweep"))
+            .unwrap()
+    };
+    let initial = sweep(&rt);
+    assert!(!initial.focusable);
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    let middle = sweep(&rt);
+    assert!(middle.rect[0] > initial.rect[0]);
+    assert!(middle.opacity < initial.opacity && middle.opacity > 0.0);
+    for _ in 0..60 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(sweep(&rt).opacity, 0.0);
+    // Repeated snapshots, read receipts and view rebuilds do not replay it.
+    next.workspaces[0].terminals[1].agents[0].unread = false;
+    rt.update(|s, _| s.apply(next));
+    rt.frame(0.0);
+    assert_eq!(sweep(&rt).opacity, 0.0);
+    assert!(rt.find("agent-3-completion-sweep").is_none());
+}
+
+#[test]
+fn completion_sweeps_skip_initial_done_reconnect_and_replacement_shells() {
+    let (mut state, _) = agent_state();
+    let mut next = state.snapshot.clone().unwrap();
+    next.workspaces[0].terminals[1].agents[0].record.status = AgentStatus::Done;
+    next.workspaces[0].terminals[1].agents[0].record.revision = 5;
+    next.workspaces[0].terminals[1].agents[0].generation = 2;
+    state.apply(next.clone());
+    assert!(state.completion_sweeps.is_empty());
+    state.online = false;
+    state.apply(next.clone());
+    assert!(state.completion_sweeps.is_empty());
+    next.core_pid += 1;
+    state.apply(next);
+    assert!(state.completion_sweeps.is_empty());
+}
+
+#[test]
+fn completion_sweep_is_hidden_with_reduced_motion() {
+    let (mut state, _) = agent_state();
+    let mut next = state.snapshot.clone().unwrap();
+    next.workspaces[0].terminals[1].agents[0].record.status = AgentStatus::Done;
+    next.workspaces[0].terminals[1].agents[0].record.revision = 5;
+    state.apply(next);
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    rt.set_system_reduced_motion(true);
+    rt.update(|_, _| {});
+    rt.frame(0.0);
+    let sweep = rt
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some("agent-2-completion-sweep"))
+        .unwrap();
+    assert_eq!(sweep.opacity, 0.0);
+    assert!(rt.find("agent-2-status-border").is_some());
 }
