@@ -354,9 +354,41 @@ impl State {
         }
     }
 
+    /// Focusing a terminal acknowledges only the notifications actually observed
+    /// in that pane. Keep generation/revision guards so a newer result survives.
+    fn acknowledge_focused_agents(&mut self) {
+        if !self.ready() || self.settings_open || self.dialog.is_some() || self.palette.is_open() {
+            return;
+        }
+        let Some(id) = self.active_terminal() else {
+            return;
+        };
+        let agents: Vec<_> = self
+            .workspace()
+            .into_iter()
+            .flat_map(|w| &w.terminals)
+            .filter(|t| t.id == id)
+            .flat_map(|t| &t.agents)
+            .filter(|a| a.unread)
+            .map(|a| Command::AcknowledgeAgent {
+                terminal_id: id,
+                generation: a.generation,
+                id: a.record.id.clone(),
+                revision: a.record.revision,
+            })
+            .collect();
+        for command in agents {
+            self.send(command);
+        }
+    }
+
     fn change(&mut self, command: Command) {
         if !self.ready() {
             return;
+        }
+        if matches!(&command, Command::SelectTerminal { terminal_id } if Some(*terminal_id) == self.active_terminal())
+        {
+            self.acknowledge_focused_agents();
         }
         self.notice = None;
         if let Some(serial) = self.send(command) {
@@ -500,6 +532,9 @@ impl State {
             }
         }
         command_palette::sync_preview(self);
+        if old_terminal != self.active_terminal() && self.pending.is_none() {
+            self.acknowledge_focused_agents();
+        }
     }
 
     fn request_close_terminal(&mut self, id: TerminalId, tx: &mut Tx) {

@@ -73,10 +73,12 @@ fn card(state: &State, p: &Palette, id: Option<TerminalId>, split: bool) -> El {
         .center_y()
         .border_sides([0.0, 0.0, 1.0, 0.0], p.line)
         .on_press_tx(move |s: &mut State, tx| {
-            if let Some(id) = id
-                && s.active_terminal() != Some(id)
-            {
-                s.change(Command::SelectTerminal { terminal_id: id });
+            if let Some(id) = id {
+                if s.active_terminal() == Some(id) {
+                    s.acknowledge_focused_agents();
+                } else {
+                    s.change(Command::SelectTerminal { terminal_id: id });
+                }
             }
             tx.blur();
         })

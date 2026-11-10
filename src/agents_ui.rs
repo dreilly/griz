@@ -91,15 +91,6 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
             continue;
         }
         let color = status_color(status, p);
-        list = list.child(
-            text(format!("{}  {}", status_label(status), group.len()))
-                .key(format!(
-                    "agent-group-{}",
-                    status_label(status).to_lowercase()
-                ))
-                .font(p.section)
-                .color(color),
-        );
         for (workspace, terminal, agent) in group {
             let workspace_id = workspace.id;
             let terminal_id = terminal.id;
@@ -131,7 +122,7 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
                 format!("agent-{terminal_id}:{id}")
             };
             let mut entry = col()
-                .key(key)
+                .key(key.clone())
                 .role("button")
                 .label(format!(
                     "{label} · {} · {}{}",
@@ -193,6 +184,24 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
                         .color(p.muted)
                         .truncate(),
                 );
+            // Only the decorative outline breathes; text, hit targets, and layout
+            // stay still. Rune's renderer freezes loops under Reduce Motion and
+            // suspends them when the window is not visible.
+            let blue = oklch(0.75, 0.12, 250.0);
+            if matches!(status, AgentStatus::Working | AgentStatus::Done) {
+                let mut outline = el()
+                    .key(format!("{key}-status-border"))
+                    .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                    .radius(6.0);
+                outline = if status == AgentStatus::Working {
+                    outline
+                        .border_gradient(1.0, oklch(0.86, 0.08, 245.0), blue.alpha(0.65))
+                        .looping(rune::LoopSpec::opacity(2.8, 0.0, 0.55, 0.95))
+                } else {
+                    outline.border(1.0, blue.alpha(0.85))
+                };
+                entry = entry.child(outline);
+            }
             if !detail.is_empty() {
                 entry = entry.child(text(detail).font(p.label).color(p.muted).truncate());
             }

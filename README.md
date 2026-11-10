@@ -146,12 +146,19 @@ used or shipped.
 
 ### Status and attention
 
-Reports appear as **Working**, **Waiting** (protocol `blocked`), **Error**,
-**Done**, or **Idle**. Record titles, messages, progress, and waiting reasons
+Reports retain **Working**, **Waiting** (protocol `blocked`), **Error**,
+**Done**, or **Idle** status on individual cards without aggregate status headings.
+Working cards have a thin, gently pulsing pale-blue gradient outline; Done cards
+have a steady blue outline. Only the outline animates, and Reduce Motion keeps
+it still. Status remains available in each card's accessibility label. Record titles, messages, progress, and waiting reasons
 come from the program. Click a record to jump to its exact terminal pane and
 acknowledge its notification. Filled dots and a count mark unacknowledged
-completion, input requests, or failures. Acknowledgements sync across windows
-and cannot dismiss a newer revision or a replacement shell's result.
+completion, input requests, or failures. Focusing a terminal through its tab,
+workspace, split pane, or pane header also acknowledges that pane's unread
+records, including when it is already selected. Other panes' notifications
+remain unread. Background status updates alone do not acknowledge notifications.
+Acknowledgements sync across windows and cannot dismiss a newer revision or a
+replacement shell's result.
 
 The core consumes reports even when a pane is hidden or every GUI is closed.
 Reopening shows the current records and unacknowledged results. Updates are

@@ -34,8 +34,8 @@ fn agents_are_listed_across_workspaces_below_workspaces_and_within_the_sidebar()
         "agents-section",
         "agent-2",
         "agent-3",
-        "agent-group-working",
-        "agent-group-done",
+        "agent-2-status-border",
+        "agent-3-status-border",
         "agent-notifications",
     ] {
         assert!(rt.find(key).is_some(), "missing {key}");
@@ -124,7 +124,8 @@ fn live_agent_updates_remove_notifications_and_closed_agents_without_changing_se
     rt.frame(0.0);
     assert!(rt.find("agent-3").is_none());
     assert!(rt.find("agent-notifications").is_none());
-    assert!(rt.find("agent-group-idle").is_some());
+    assert!(rt.find("agent-group-idle").is_none());
+    assert!(rt.find("agent-2-status-border").is_none());
     assert_eq!(rt.state.active_terminal(), Some(1));
     rt.update(|s, _| {
         s.online = false;
@@ -221,4 +222,127 @@ fn agents_empty_state_is_visible_and_hidden_with_the_sidebar() {
     assert!(rt.find("agents-empty").is_some());
     click(&mut rt, "toggle-sidebar");
     assert!(rt.find("agents-section").is_none());
+}
+
+#[test]
+fn focusing_an_already_selected_terminal_clears_only_that_panes_notifications() {
+    for key in ["terminal", "terminal-header", "tab-1"] {
+        let (mut state, outgoing) = agent_state();
+        state.snapshot.as_mut().unwrap().workspaces[0].terminals[0].agents =
+            vec![agent("", AgentStatus::Done, true)];
+        let mut rt = make_runtime(state, (1100.0, 720.0));
+        rt.frame(0.0);
+        commands(&outgoing);
+        click(&mut rt, key);
+        let sent = commands(&outgoing);
+        let acknowledgements: Vec<_> = sent
+            .iter()
+            .filter(|(_, c)| matches!(c, Command::AcknowledgeAgent { .. }))
+            .collect();
+        assert_eq!(acknowledgements.len(), 1, "{key}");
+        assert!(
+            matches!(&acknowledgements[0].1, Command::AcknowledgeAgent { terminal_id: 1, generation: 1, id, revision: 4 } if id.is_empty())
+        );
+    }
+}
+
+#[test]
+fn switching_workspace_acknowledges_only_confirmed_focused_pane() {
+    let (mut state, outgoing) = agent_state();
+    commands(&outgoing);
+    state.change(Command::SelectWorkspace { workspace_id: 2 });
+    let sent = commands(&outgoing);
+    assert_eq!(sent.len(), 1);
+    let mut next = state.snapshot.clone().unwrap();
+    next.active_workspace = 2;
+    next.active_terminal = Some(3);
+    // A stale, intermediate snapshot must not acknowledge anything.
+    state.apply(next.clone());
+    assert!(commands(&outgoing).is_empty());
+    next.ack = sent[0].0;
+    state.apply(next.clone());
+    let sent = commands(&outgoing);
+    assert_eq!(sent.len(), 1);
+    assert!(
+        matches!(&sent[0].1, Command::AcknowledgeAgent { terminal_id: 3, generation: 1, id, revision: 4 } if id.is_empty())
+    );
+    // A background status update is not a focus action.
+    state.apply(next);
+    assert!(commands(&outgoing).is_empty());
+}
+
+#[test]
+fn switching_tabs_or_split_panes_acknowledges_the_selected_terminal_only() {
+    let (mut state, outgoing) = agent_state();
+    state.snapshot.as_mut().unwrap().workspaces[0].terminals[1].agents =
+        vec![agent("", AgentStatus::Done, true)];
+    commands(&outgoing);
+    state.change(Command::SelectTerminal { terminal_id: 2 });
+    let selection = commands(&outgoing);
+    let mut next = state.snapshot.clone().unwrap();
+    next.active_terminal = Some(2);
+    next.ack = selection[0].0;
+    state.apply(next);
+    let sent = commands(&outgoing);
+    assert_eq!(sent.len(), 1);
+    assert!(matches!(
+        sent[0].1,
+        Command::AcknowledgeAgent { terminal_id: 2, .. }
+    ));
+}
+
+#[test]
+fn focusing_does_not_acknowledge_read_records_or_offline_or_modal_views() {
+    let (mut state, outgoing) = agent_state();
+    commands(&outgoing);
+    state.acknowledge_focused_agents();
+    assert!(commands(&outgoing).is_empty());
+    state.snapshot.as_mut().unwrap().workspaces[0].terminals[0].agents =
+        vec![agent("", AgentStatus::Done, true)];
+    state.settings_open = true;
+    state.acknowledge_focused_agents();
+    state.settings_open = false;
+    state.online = false;
+    state.acknowledge_focused_agents();
+    assert!(commands(&outgoing).is_empty());
+}
+
+#[test]
+fn agent_cards_replace_group_headings_with_border_only_motion() {
+    let (state, _) = agent_state();
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    rt.frame(0.0);
+    assert!(
+        rt.elements()
+            .iter()
+            .all(|e| !e.key.as_deref().unwrap_or("").starts_with("agent-group-"))
+    );
+    let inspect = |rt: &Runtime<State>, key: &str| {
+        rt.elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(key))
+            .unwrap()
+    };
+    let working = inspect(&rt, "agent-2-status-border");
+    let card = inspect(&rt, "agent-2");
+    let done = inspect(&rt, "agent-3-status-border");
+    assert!(working.loop_phase.is_some());
+    assert!(done.loop_phase.is_none());
+    assert!(!working.focusable);
+    assert_eq!(working.rect, card.rect);
+    for _ in 0..84 {
+        rt.frame(1.0 / 60.0);
+    }
+    let later = inspect(&rt, "agent-2-status-border");
+    assert!((later.opacity - working.opacity).abs() > 0.1);
+    assert_eq!(inspect(&rt, "agent-2").opacity, card.opacity);
+    assert_eq!(inspect(&rt, "agent-2").rect, card.rect);
+    assert_eq!(inspect(&rt, "agent-3-status-border").opacity, done.opacity);
+    rt.reduced_motion = true;
+    rt.frame(1.0 / 60.0);
+    let still = inspect(&rt, "agent-2-status-border").opacity;
+    for _ in 0..84 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert_eq!(inspect(&rt, "agent-2-status-border").opacity, still);
 }

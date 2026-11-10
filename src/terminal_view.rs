@@ -64,10 +64,12 @@ pub fn viewport(state: &State, id: Option<TerminalId>, split: bool) -> El {
         .clip_soft(0.0)
         .instant_changes()
         .on_press_tx(move |state: &mut State, tx| {
-            if let Some(id) = id
-                && state.active_terminal() != Some(id)
-            {
-                state.change(crate::Command::SelectTerminal { terminal_id: id });
+            if let Some(id) = id {
+                if state.active_terminal() == Some(id) {
+                    state.acknowledge_focused_agents();
+                } else {
+                    state.change(crate::Command::SelectTerminal { terminal_id: id });
+                }
             }
             tx.blur();
         })
