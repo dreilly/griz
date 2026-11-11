@@ -1,7 +1,7 @@
 use super::*;
 use griz_protocol::{AgentInfo, AgentStatus, ProgramStatusRecord};
 
-fn agent(id: &str, status: AgentStatus, unread: bool) -> AgentInfo {
+pub(super) fn agent(id: &str, status: AgentStatus, unread: bool) -> AgentInfo {
     AgentInfo {
         record: ProgramStatusRecord {
             id: id.into(),

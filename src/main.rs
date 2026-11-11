@@ -2,6 +2,7 @@
 mod agents_ui;
 mod client;
 mod command_palette;
+mod harness_icons;
 mod input;
 mod navigation_preview;
 mod panes;

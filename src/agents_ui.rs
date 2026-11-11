@@ -1,5 +1,5 @@
 //! Program-reported OSC 7501 records across every workspace and terminal pane.
-use crate::{Command, State, ui::Palette, workspace_ui::accent_color};
+use crate::{Command, State, harness_icons::Harness, ui::Palette, workspace_ui::accent_color};
 use griz_protocol::{AgentStatus, ProgramStatusKind, ProgramStatusRecord, TerminalId, WorkspaceId};
 use rune::{Color, El, col, el, oklch, row, text};
 
@@ -162,6 +162,7 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
             let generation = agent.generation;
             let revision = record.revision;
             let label = record_label(record);
+            let harness = Harness::from_app(&record.app);
             let message = display_text(&record.message);
             let detail = match (message.is_empty(), record.progress) {
                 (true, None) => String::new(),
@@ -188,7 +189,8 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
                 .key(key.clone())
                 .role("button")
                 .label(format!(
-                    "{label} · {} · {}{}",
+                    "{label} · {} · {} · {}{}",
+                    harness.name(),
                     workspace.name,
                     status_label(status),
                     if agent.unread {
@@ -227,6 +229,7 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
                         .min_w(0.0)
                         .gap(6.0)
                         .center_y()
+                        .child(harness.badge(format!("{key}-harness-icon"), p))
                         .child(
                             text(label)
                                 .font(p.label)

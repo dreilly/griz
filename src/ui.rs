@@ -67,6 +67,16 @@ fn styled_button(
     p: &Palette,
     style: crate::settings::WorkspaceButtonStyle,
 ) -> El {
+    styled_button_with_leading(key, label, p, style, [])
+}
+
+fn styled_button_with_leading(
+    key: impl Into<String>,
+    label: &str,
+    p: &Palette,
+    style: crate::settings::WorkspaceButtonStyle,
+    leading: impl IntoIterator<Item = El>,
+) -> El {
     button_surface(
         row()
             .key(key)
@@ -75,7 +85,9 @@ fn styled_button(
             .focusable(true)
             .h(p.control_height())
             .px(10.0)
+            .gap(6.0)
             .center_y()
+            .children(leading)
             .child(text(label).font(p.label).color(button_ink(style, p))),
         style,
         p,
@@ -306,6 +318,12 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 .position(|t| t.id == target)
                 .map(|i| i + 1)
                 .unwrap_or(number);
+            let harnesses = crate::harness_icons::for_tab(workspace, tab);
+            let harness_names = harnesses
+                .iter()
+                .map(|h| h.name())
+                .collect::<Vec<_>>()
+                .join(", ");
             tabs = tabs.child(
                 row()
                     .key(format!("tab-container-{id}"))
@@ -320,13 +338,20 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                         Color::TRANSPARENT
                     })
                     .child(
-                        styled_button(
+                        styled_button_with_leading(
                             format!("tab-{id}"),
                             &label,
                             &p,
                             crate::settings::WorkspaceButtonStyle::Ghost,
+                            harnesses
+                                .iter()
+                                .map(|h| h.badge(format!("tab-{id}-harness-{}", h.key()), &p)),
                         )
-                        .label(format!("Select terminal {number}"))
+                        .label(if harness_names.is_empty() {
+                            format!("Select terminal {number}")
+                        } else {
+                            format!("Select terminal {number} · {harness_names}")
+                        })
                         .focus_ring(2.0, 2.0, workspace_accent)
                         .grow(1.0)
                         .disabled(!state.ready())

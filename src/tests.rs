@@ -8,6 +8,8 @@ mod chrome;
 mod command_palette_tests;
 #[path = "tests/font_and_close.rs"]
 mod font_and_close;
+#[path = "tests/harness_icons.rs"]
+mod harness_icons;
 #[path = "tests/input_latency.rs"]
 mod input_latency;
 #[path = "tests/navigation_previews.rs"]

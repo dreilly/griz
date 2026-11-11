@@ -144,6 +144,18 @@ isolated preview instructions above to keep existing terminals undisturbed.
 The earlier experimental Pi bridge and custom agent-reporting IPC are no longer
 used or shipped.
 
+### Harness logos
+
+Agent cards and numbered tabs show bundled logos for **Pi**, **Claude Code**,
+**Codex**, **Gemini CLI**, and **OpenCode**, based on the report's `app` identity.
+Unknown programs get a generic terminal mark; ordinary shells keep their plain
+numbered tabs. Split tabs show each distinct harness once across all their panes,
+including background panes and child records. Icons update when reports change
+or clear, without changing selection, status, or notification behavior.
+No logo font, downloads, or harness-specific setup is required. These icons do
+not add agent detection: a program still needs to report OSC 7501 to appear.
+Asset sources and notices are in [`assets/harnesses/NOTICE.md`](assets/harnesses/NOTICE.md).
+
 ### Status and attention
 
 Reports retain **Working**, **Waiting** (protocol `blocked`), **Error**,
