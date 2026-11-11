@@ -398,8 +398,9 @@ and loses the catalog. No launchd integration or reboot restoration is installed
   mixed-weight junctions and half-line caps), so TUI logos and borders join without
   font-leading gaps. The same geometry scales into navigation previews.
 - Window/sidebar resize updates libghostty and every visible pane's PTY (SIGWINCH).
-- Enter, Backspace, Tab, arrows (including application cursor mode), common navigation
-  and function keys, Ctrl-C/Ctrl-D, clipboard paste, and basic IME preedit/commit.
+- Enter, Shift+Enter (CSI-u, for multiline input in Pi and compatible TUIs), Backspace,
+  Tab, arrows (including application cursor mode), common navigation and function keys,
+  Ctrl-C/Ctrl-D, clipboard paste, and basic IME preedit/commit.
 - Terminal mouse reporting, visible-grid selection, automatic clipboard copy on release,
   and a transient bottom copy confirmation.
 - Detach/reattach, background output, workspace/final-terminal close confirmation,

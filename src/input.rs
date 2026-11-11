@@ -1,4 +1,5 @@
-//! Basic xterm-compatible input. Keyboard-protocol extensions are deliberately not advertised.
+//! Basic xterm-compatible input, with CSI-u for Shift+Enter.
+//! Full keyboard-protocol extensions are deliberately not advertised.
 use rune::{Key, KeyEvent};
 
 pub fn encode(event: &KeyEvent, application_cursor: bool) -> Option<Vec<u8>> {
@@ -22,6 +23,11 @@ pub fn encode(event: &KeyEvent, application_cursor: bool) -> Option<Vec<u8>> {
         }
     }
     let modifier = 1 + u8::from(m.shift) + 2 * u8::from(m.alt) + 4 * u8::from(m.ctrl);
+    // Preserve Shift+Enter for multiline TUI input (e.g. Pi) without changing
+    // plain Enter or advertising full Kitty keyboard-protocol support.
+    if event.key == Key::Enter && m.shift {
+        return Some(format!("\x1b[13;{modifier}u").into_bytes());
+    }
     let arrow = match event.key {
         Key::Up => Some('A'),
         Key::Down => Some('B'),
@@ -107,6 +113,45 @@ mod tests {
         };
         assert_eq!(encode(&ctrl_c, false), Some(vec![3]));
     }
+    #[test]
+    fn shift_enter_preserves_modifiers_as_csi_u() {
+        for (alt, ctrl, modifier) in [
+            (false, false, 2),
+            (true, false, 4),
+            (false, true, 6),
+            (true, true, 8),
+        ] {
+            let event = KeyEvent {
+                key: Key::Enter,
+                mods: Mods {
+                    shift: true,
+                    alt,
+                    ctrl,
+                    ..Mods::default()
+                },
+            };
+            for application_cursor in [false, true] {
+                assert_eq!(
+                    encode(&event, application_cursor).unwrap(),
+                    format!("\x1b[13;{modifier}u").as_bytes()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn command_shift_enter_is_left_to_the_platform() {
+        let event = KeyEvent {
+            key: Key::Enter,
+            mods: Mods {
+                shift: true,
+                logo: true,
+                ..Mods::default()
+            },
+        };
+        assert_eq!(encode(&event, false), None);
+    }
+
     #[test]
     fn bracketed_paste_cannot_be_escaped_by_clipboard_contents() {
         assert_eq!(paste("a\r\nb\x1b", true), b"\x1b[200~a\nb\x1b[201~");

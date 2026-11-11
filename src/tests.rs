@@ -411,6 +411,32 @@ fn typing_works_after_terminal_or_non_selection_toolbar_clicks() {
 }
 
 #[test]
+fn shift_enter_reaches_the_terminal_without_submitting_as_enter() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1000.0, 680.0));
+    click(&mut rt, "terminal");
+    commands(&outgoing);
+
+    for (shift, expected) in [(true, b"\x1b[13;2u".as_slice()), (false, b"\r".as_slice())] {
+        rt.key(KeyEvent {
+            key: rune::Key::Enter,
+            mods: rune::Mods {
+                shift,
+                ..rune::Mods::default()
+            },
+        });
+        rt.frame(0.0);
+        assert!(
+            matches!(
+                commands(&outgoing).as_slice(),
+                [(_, Command::Input { terminal_id: 1, data })] if data == expected
+            ),
+            "incorrect terminal input with shift={shift}"
+        );
+    }
+}
+
+#[test]
 fn switching_tabs_waits_for_ack_and_routes_input_to_the_new_id() {
     let (state, outgoing) = mock();
     let mut rt = make_runtime(state, (1000.0, 680.0));
