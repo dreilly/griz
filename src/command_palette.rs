@@ -61,6 +61,7 @@ struct Entry {
     title: String,
     detail: String,
     shortcut: String,
+    harnesses: Vec<crate::harness_icons::Harness>,
     enabled: bool,
 }
 
@@ -76,6 +77,7 @@ impl Entry {
             title: title.into(),
             detail: detail.into(),
             shortcut: String::new(),
+            harnesses: Vec::new(),
             enabled,
         }
     }
@@ -167,12 +169,14 @@ fn entries(state: &State) -> Vec<Entry> {
         Some(Mode::Navigate) => {
             if let Some(snapshot) = &state.snapshot {
                 for workspace in &snapshot.workspaces {
-                    entries.push(Entry::new(
+                    let mut entry = Entry::new(
                         Target::Workspace(workspace.id),
                         &workspace.name,
                         format!("Workspace · {}", workspace.directory),
                         state.ready(),
-                    ));
+                    );
+                    entry.harnesses = crate::harness_icons::for_terminals(&workspace.terminals);
+                    entries.push(entry);
                     for (index, terminal) in workspace.terminals.iter().enumerate() {
                         // Automatic workspace names describe the selected tab, not its siblings.
                         // Only a custom workspace name is shared search context for every tab.
@@ -184,7 +188,7 @@ fn entries(state: &State) -> Vec<Entry> {
                             Some(name) => format!("{name} › {directory_name}"),
                             None => directory_name.to_owned(),
                         };
-                        entries.push(Entry::new(
+                        let mut entry = Entry::new(
                             Target::Terminal(workspace.id, terminal.id),
                             format!(
                                 "{} › Terminal {}{}",
@@ -198,7 +202,9 @@ fn entries(state: &State) -> Vec<Entry> {
                             ),
                             format!("Terminal · {}", terminal.directory),
                             state.ready(),
-                        ));
+                        );
+                        entry.harnesses = crate::harness_icons::for_terminals([terminal]);
+                        entries.push(entry);
                     }
                 }
             }
@@ -509,6 +515,12 @@ pub(crate) fn panel(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
             .disabled(!entry.enabled)
             .preserve_focus_on_press(true)
             .on_press_tx(move |s: &mut State, tx| activate(s, target, tx))
+            .children(
+                entry
+                    .harnesses
+                    .iter()
+                    .map(|h| h.badge(format!("{}-harness-{}", entry.key(), h.key()), p)),
+            )
             .child(
                 col()
                     .grow(1.0)

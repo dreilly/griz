@@ -148,8 +148,9 @@ used or shipped.
 
 Agent cards and numbered tabs show bundled logos for **Pi**, **Claude Code**,
 **Codex**, **Gemini CLI**, and **OpenCode**, based on the report's `app` identity.
-Unknown programs get a generic terminal mark; ordinary shells keep their plain
-numbered tabs. Split tabs show each distinct harness once across all their panes,
+Unknown programs get a generic terminal mark; ordinary shells show a terminal
+icon beside their tab number. Quick Open uses the same terminal fallback when
+no harness is reporting. Split tabs show each distinct harness once across all their panes,
 including background panes and child records. Icons update when reports change
 or clear, without changing selection, status, or notification behavior.
 No logo font, downloads, or harness-specific setup is required. These icons do

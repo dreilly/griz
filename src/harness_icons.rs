@@ -1,7 +1,7 @@
 //! Shared, bundled harness marks. Identity comes only from OSC 7501's `app`,
 //! never titles, terminal output, process names, or program-supplied SVG/URLs.
 use crate::ui::Palette;
-use griz_protocol::{TabInfo, WorkspaceInfo};
+use griz_protocol::{TabInfo, TerminalInfo, WorkspaceInfo};
 use rune::{El, Icon, icon};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -11,6 +11,7 @@ pub(crate) enum Harness {
     Codex,
     Gemini,
     OpenCode,
+    Terminal,
     Other,
 }
 
@@ -64,6 +65,7 @@ impl Harness {
             Self::Codex => "Codex",
             Self::Gemini => "Gemini CLI",
             Self::OpenCode => "OpenCode",
+            Self::Terminal => "Terminal",
             Self::Other => "Program",
         }
     }
@@ -75,6 +77,7 @@ impl Harness {
             Self::Codex => "codex",
             Self::Gemini => "gemini",
             Self::OpenCode => "opencode",
+            Self::Terminal => "terminal",
             Self::Other => "program",
         }
     }
@@ -86,7 +89,7 @@ impl Harness {
             Self::Codex => &CODEX,
             Self::Gemini => &GEMINI,
             Self::OpenCode => &OPENCODE,
-            Self::Other => &PROGRAM,
+            Self::Terminal | Self::Other => &PROGRAM,
         };
         icon(mark, p.label.line_px().max(16.0))
             .key(key)
@@ -99,16 +102,33 @@ impl Harness {
 /// A split tab represents every pane, not just the selected one. Child records
 /// and multiple panes using the same harness must not repeat its mark.
 pub(crate) fn for_tab(workspace: &WorkspaceInfo, tab: &TabInfo) -> Vec<Harness> {
+    for_terminals(
+        tab.layout
+            .terminal_ids()
+            .into_iter()
+            .filter_map(|id| workspace.terminals.iter().find(|t| t.id == id)),
+    )
+}
+
+/// Share identity and deduplication across tab, workspace, and terminal results.
+pub(crate) fn for_terminals<'a>(
+    terminals: impl IntoIterator<Item = &'a TerminalInfo>,
+) -> Vec<Harness> {
     let mut harnesses = Vec::new();
-    for id in tab.layout.terminal_ids() {
-        if let Some(terminal) = workspace.terminals.iter().find(|t| t.id == id) {
-            for agent in &terminal.agents {
-                let harness = Harness::from_app(&agent.record.app);
-                if !harnesses.contains(&harness) {
-                    harnesses.push(harness);
-                }
+    let mut has_terminals = false;
+    for terminal in terminals {
+        has_terminals = true;
+        for agent in &terminal.agents {
+            let harness = Harness::from_app(&agent.record.app);
+            if !harnesses.contains(&harness) {
+                harnesses.push(harness);
             }
         }
+    }
+    // Plain shells still get a mark, but don't crowd out harness identities in
+    // mixed tabs/workspaces. This is presentation, not an agent status record.
+    if has_terminals && harnesses.is_empty() {
+        harnesses.push(Harness::Terminal);
     }
     harnesses
 }
