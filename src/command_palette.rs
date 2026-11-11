@@ -220,6 +220,7 @@ fn entries(state: &State) -> Vec<Entry> {
                     }
                     Action::NewWorkspace => state.ready(),
                     Action::SplitHorizontal | Action::SplitVertical => state.can_split(),
+                    Action::TogglePaneZoom => state.can_zoom_pane(),
                     _ => state.ready() && state.active_terminal().is_some(),
                 };
                 let (title, detail) = if action == Action::NewWorkspace {

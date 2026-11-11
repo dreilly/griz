@@ -7,7 +7,9 @@ mod socket;
 mod validation;
 
 use clients::Outbox;
-use griz_protocol::{Command, Event, Request, TerminalId, receive, send, socket_path};
+use griz_protocol::{
+    Command, Event, Request, TerminalId, WorkspaceAccent, receive, send, socket_path,
+};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc::sync_channel};
@@ -20,6 +22,7 @@ enum Message {
         client_id: ClientId,
         cols: u16,
         rows: u16,
+        default_workspace_accent: WorkspaceAccent,
         outbox: Arc<Outbox>,
     },
     Detach {

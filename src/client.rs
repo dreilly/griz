@@ -1,6 +1,6 @@
 //! The GUI never owns a PTY or emulator. It only attaches to the local service.
 use griz_protocol::{
-    Command as CoreCommand, Event, Request, ViewState, receive, send, socket_path,
+    Command as CoreCommand, Event, Request, ViewState, WorkspaceAccent, receive, send, socket_path,
 };
 use rune::Waker;
 use std::fs::OpenOptions;
@@ -48,7 +48,7 @@ impl Client {
         )
     }
 
-    pub fn start(grid: (u16, u16), wake: Waker) -> Self {
+    pub fn start(grid: (u16, u16), default_workspace_accent: WorkspaceAccent, wake: Waker) -> Self {
         let (outgoing, requests) = sync_channel(64);
         let inbox = Arc::new(Mutex::new(Inbox::default()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -69,6 +69,7 @@ impl Client {
                     &Request::Attach {
                         cols: grid.0,
                         rows: grid.1,
+                        default_workspace_accent,
                     },
                 )?;
                 *socket.lock().unwrap() = Some(stream.try_clone()?);

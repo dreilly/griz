@@ -281,8 +281,18 @@ pub struct ViewState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    Attach { cols: u16, rows: u16 },
-    Command { serial: u64, command: Command },
+    Attach {
+        cols: u16,
+        rows: u16,
+        /// Used only by the first attachment to initialize a fresh core's workspace.
+        /// Later attachments never recolor existing workspaces. Older clients use green.
+        #[serde(default)]
+        default_workspace_accent: WorkspaceAccent,
+    },
+    Command {
+        serial: u64,
+        command: Command,
+    },
     Shutdown,
 }
 
@@ -580,6 +590,37 @@ mod tests {
         assert!(
             serde_json::from_str::<Command>(
                 r#"{"type":"create_workspace","name":"","accent":"invalid"}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn attach_defaults_legacy_clients_to_green_and_preserves_explicit_accents() {
+        let legacy: Request =
+            serde_json::from_str(r#"{"type":"attach","cols":80,"rows":24}"#).unwrap();
+        assert!(matches!(
+            legacy,
+            Request::Attach {
+                default_workspace_accent: WorkspaceAccent::Green,
+                ..
+            }
+        ));
+        for accent in WorkspaceAccent::ALL {
+            let request = Request::Attach {
+                cols: 80,
+                rows: 24,
+                default_workspace_accent: accent,
+            };
+            let decoded: Request =
+                serde_json::from_value(serde_json::to_value(request).unwrap()).unwrap();
+            assert!(
+                matches!(decoded, Request::Attach { cols: 80, rows: 24, default_workspace_accent } if default_workspace_accent == accent)
+            );
+        }
+        assert!(
+            serde_json::from_str::<Request>(
+                r#"{"type":"attach","cols":80,"rows":24,"default_workspace_accent":"invalid"}"#
             )
             .is_err()
         );

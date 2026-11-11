@@ -143,6 +143,13 @@ connection, and a scratch shell, all in unrelated directories.
   pane equally and can be nested, up to eight panes per tab. Each pane has its own
   rounded frame, separated by a 10-point gap. The new shell inherits the target
   shell's current directory. All visible panes update independently, including unfocused ones.
+- **Zoom a pane:** click **⤢** in a split pane's header or press **⌘Enter** to
+  make the focused pane fill the terminal content area without making the window
+  fullscreen or hiding the sidebar/tabs. Other panes keep running; the zoom control
+  gains a border in the pane's accent color while zoomed. Click **⤡** or press
+  **⌘Enter** again to restore the original split layout. Pane-focus shortcuts still
+  cycle through panes while zoomed. Zoom is remembered per tab in this window only;
+  creating a split reveals the layout, and closing down to one pane clears zoom.
   **⌥⌘→ / ⌥⌘←** cycle pane focus within the current tab. Split ratios are fixed at
   50/50 for now; draggable dividers are not implemented.
 - Right-click any workspace for **Rename workspace…**,
@@ -328,7 +335,9 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   green, or graphite for workspaces created from this GUI. Existing workspaces keep
   their own colors, which can still be changed from their context menu. The default
   is saved locally with the other appearance preferences; the chosen color becomes
-  shared workspace state when a workspace is created.
+  shared workspace state when a workspace is created. A fresh core's initial workspace
+  uses the first attaching GUI's saved default too, before its first view is shown.
+  Reconnecting to an existing core never overrides workspace colors.
   Regular action buttons use a fixed **Soft** style with a subtle neutral fill,
   rounded corners, and consistent hover, press, and keyboard focus states. There
   is no button-style picker; older style preferences are ignored.
@@ -343,7 +352,9 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   **⌘W** closes the **active terminal** (confirming only for a workspace's final
   terminal), **⇧⌘N** opens New Workspace,
   **⌘B** toggles the sidebar, and **⇧⌘→ / ⇧⌘←** cycle through tabs.
-  **⌘D / ⇧⌘D** split vertically/horizontally, and **⌥⌘→ / ⌥⌘←** cycle pane focus.
+  **⌘D / ⇧⌘D** split vertically/horizontally, **⌥⌘→ / ⌥⌘←** cycle pane focus,
+  and **⌘Enter** toggles pane zoom. **Toggle pane zoom** is also available in the
+  command palette and can be rebound or disabled in Settings (`pane.toggle_zoom`).
   Closing targets the focused pane's captured terminal ID, not a tab or window.
   The Settings shortcut **⌘,** stays fixed so Settings is always reachable.
 

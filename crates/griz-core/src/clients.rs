@@ -116,13 +116,17 @@ fn connection(
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let request = receive(&mut stream)?;
-    let (cols, rows) = match request {
+    let (cols, rows, default_workspace_accent) = match request {
         Request::Shutdown => {
             send(&mut stream, &Event::Stopping)?;
             let _ = tx.send(Message::Shutdown);
             return Ok(());
         }
-        Request::Attach { cols, rows } => (cols, rows),
+        Request::Attach {
+            cols,
+            rows,
+            default_workspace_accent,
+        } => (cols, rows, default_workspace_accent),
         _ => {
             return send(
                 &mut stream,
@@ -140,6 +144,7 @@ fn connection(
         client_id,
         cols,
         rows,
+        default_workspace_accent,
         outbox: outbox.clone(),
     })
     .map_err(io::Error::other)?;

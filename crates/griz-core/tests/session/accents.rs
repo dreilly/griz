@@ -2,6 +2,73 @@ use super::*;
 use griz_protocol::WorkspaceAccent;
 
 #[test]
+fn fresh_core_uses_the_first_clients_default_accent_in_its_first_view() {
+    for accent in WorkspaceAccent::ALL {
+        // A new core (including a restart) should initialize from the attaching GUI.
+        let service = Service::start();
+        let mut first = service.attach_with_accent(80, 24, accent);
+        let initial = next_view(&mut first);
+        assert_eq!(initial.workspaces.len(), 1);
+        assert_eq!(initial.workspaces[0].accent, accent);
+        assert_eq!(initial.workspaces[0].terminals.len(), 1);
+        assert_eq!(initial.active_workspace, initial.workspaces[0].id);
+        assert_eq!(
+            initial.active_terminal,
+            Some(initial.workspaces[0].terminals[0].id)
+        );
+
+        // Another window with a different default cannot overwrite this choice.
+        let other_accent = if accent == WorkspaceAccent::Pink {
+            WorkspaceAccent::Blue
+        } else {
+            WorkspaceAccent::Pink
+        };
+        let mut observer = service.attach_with_accent(0, 0, other_accent);
+        let observed = next_view(&mut observer);
+        assert_eq!(observed.workspaces[0].accent, accent);
+        assert_eq!(
+            observed.workspaces[0].terminals[0].shell_pid,
+            initial.workspaces[0].terminals[0].shell_pid
+        );
+
+        // Explicit edits also survive later attachments and reconnects.
+        command(
+            &mut first,
+            1,
+            CoreCommand::SetWorkspaceAccent {
+                workspace_id: initial.active_workspace,
+                accent: other_accent,
+            },
+        );
+        assert_eq!(ack(&mut first, 1).workspaces[0].accent, other_accent);
+        drop(first);
+        drop(observer);
+        let mut reconnected = service.attach_with_accent(80, 24, accent);
+        assert_eq!(
+            next_view(&mut reconnected).workspaces[0].accent,
+            other_accent
+        );
+    }
+}
+
+#[test]
+fn attaching_to_an_emptied_core_does_not_recreate_the_initial_workspace() {
+    let service = Service::start();
+    let mut first = service.attach_with_accent(80, 24, WorkspaceAccent::Purple);
+    let initial = next_view(&mut first);
+    command(
+        &mut first,
+        1,
+        CoreCommand::CloseWorkspace {
+            workspace_id: initial.active_workspace,
+        },
+    );
+    assert!(ack(&mut first, 1).workspaces.is_empty());
+    let mut reconnected = service.attach_with_accent(80, 24, WorkspaceAccent::Orange);
+    assert!(next_view(&mut reconnected).workspaces.is_empty());
+}
+
+#[test]
 fn workspace_creation_sets_the_requested_accent_atomically_for_every_client() {
     let service = Service::start();
     let mut first = service.attach(80, 24);

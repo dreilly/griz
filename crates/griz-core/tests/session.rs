@@ -84,11 +84,28 @@ impl Service {
     }
 
     fn attach(&self, cols: u16, rows: u16) -> UnixStream {
+        self.attach_with_accent(cols, rows, Default::default())
+    }
+
+    fn attach_with_accent(
+        &self,
+        cols: u16,
+        rows: u16,
+        default_workspace_accent: griz_protocol::WorkspaceAccent,
+    ) -> UnixStream {
         let mut stream = UnixStream::connect(&self.path).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(4)))
             .unwrap();
-        send(&mut stream, &Request::Attach { cols, rows }).unwrap();
+        send(
+            &mut stream,
+            &Request::Attach {
+                cols,
+                rows,
+                default_workspace_accent,
+            },
+        )
+        .unwrap();
         stream
     }
 }

@@ -20,7 +20,7 @@ use griz_protocol::{
 };
 use rune::{App, AppSpec, Ime, KeyEvent, TextEdit, Titlebar, Tx, Waker};
 use settings::{Action, Settings};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use ui::view;
 
 const TITLEBAR_HEIGHT: f32 = 44.0;
@@ -61,6 +61,8 @@ struct State {
     palette: command_palette::PaletteState,
     completion_sweeps: agents_ui::CompletionSweeps,
     terminal_mouse: terminal_mouse::Interaction,
+    /// Per-window presentation only; stable tab IDs survive closing their first pane.
+    zoomed_tabs: HashSet<TerminalId>,
     pane_sizes: HashMap<TerminalId, (f32, f32)>,
     pane_grids: HashMap<TerminalId, (u16, u16)>,
 }
@@ -92,6 +94,7 @@ impl Default for State {
             palette: command_palette::PaletteState::default(),
             completion_sweeps: Default::default(),
             terminal_mouse: Default::default(),
+            zoomed_tabs: HashSet::new(),
             pane_sizes: HashMap::new(),
             pane_grids: HashMap::new(),
         }
@@ -182,6 +185,12 @@ impl State {
                     );
                 }
             }
+            Action::TogglePaneZoom => {
+                if let Some(id) = self.active_terminal() {
+                    self.toggle_pane_zoom(id);
+                    tx.blur();
+                }
+            }
             Action::NextPane | Action::PreviousPane => {
                 if let Some(tab) = self.active_tab() {
                     let ids = tab.layout.terminal_ids();
@@ -242,6 +251,55 @@ impl State {
             .find(|t| t.layout.contains(id))
     }
 
+    fn can_zoom_pane(&self) -> bool {
+        self.ready()
+            && self
+                .active_tab()
+                .is_some_and(|tab| tab.layout.terminal_ids().len() > 1)
+    }
+
+    fn pane_zoomed(&self) -> bool {
+        self.active_tab()
+            .is_some_and(|tab| self.zoomed_tabs.contains(&tab.id))
+    }
+
+    fn pane_visible(&self, id: TerminalId) -> bool {
+        self.active_tab().is_some_and(|tab| tab.layout.contains(id))
+            && (!self.pane_zoomed() || self.active_terminal() == Some(id))
+    }
+
+    fn retain_visible_pane_sizes(&mut self) {
+        let visible: Vec<_> = self
+            .active_tab()
+            .map(|tab| tab.layout.terminal_ids())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| self.pane_visible(*id))
+            .collect();
+        self.pane_sizes.retain(|id, _| visible.contains(id));
+        self.pane_grids.retain(|id, _| visible.contains(id));
+    }
+
+    fn toggle_pane_zoom(&mut self, terminal_id: TerminalId) {
+        if !self.can_zoom_pane()
+            || !self
+                .active_tab()
+                .is_some_and(|tab| tab.layout.contains(terminal_id))
+        {
+            return;
+        }
+        let tab_id = self.active_tab().unwrap().id;
+        terminal_mouse::cancel(self);
+        self.preedit.clear();
+        if !self.zoomed_tabs.remove(&tab_id) {
+            self.zoomed_tabs.insert(tab_id);
+        }
+        if self.active_terminal() != Some(terminal_id) {
+            self.change(Command::SelectTerminal { terminal_id });
+        }
+        self.retain_visible_pane_sizes();
+    }
+
     fn can_split(&self) -> bool {
         self.ready()
             && self
@@ -256,6 +314,10 @@ impl State {
                 .is_some_and(|tab| tab.layout.contains(terminal_id))
         {
             return;
+        }
+        // A new split should be visible rather than silently created behind a zoom.
+        if let Some(tab_id) = self.active_tab().map(|tab| tab.id) {
+            self.zoomed_tabs.remove(&tab_id);
         }
         let split = Command::SplitTerminal {
             terminal_id,
@@ -289,7 +351,7 @@ impl State {
     fn layout_pane(&mut self, id: TerminalId, width: f32, height: f32) {
         // Layout callbacks are queued; a pane may have closed or its tab changed
         // before this callback runs. Do not resurrect it or resize a hidden shell.
-        if !self.active_tab().is_some_and(|t| t.layout.contains(id)) {
+        if !self.pane_visible(id) {
             return;
         }
         self.pane_sizes.insert(id, (width, height));
@@ -339,7 +401,11 @@ impl State {
                 .as_ref()
                 .map(|s| (s.core_pid, s.active_workspace, s.active_terminal));
             self.palette.reset_preview();
-            self.client = Some(client::Client::start(self.grid, wake.clone()));
+            self.client = Some(client::Client::start(
+                self.grid,
+                self.settings.default_workspace_accent,
+                wake.clone(),
+            ));
             self.pending = None;
             self.online = false;
             self.preedit.clear();
@@ -504,6 +570,20 @@ impl State {
         {
             terminal_mouse::discard(self);
         }
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|old| old.core_pid != snapshot.core_pid)
+        {
+            self.zoomed_tabs.clear();
+        }
+        self.zoomed_tabs.retain(|id| {
+            snapshot.workspaces.iter().any(|w| {
+                w.tabs
+                    .iter()
+                    .any(|tab| tab.id == *id && tab.layout.terminal_ids().len() > 1)
+            })
+        });
         self.snapshot = Some(snapshot);
         terminal_mouse::reconcile(self);
         if self.shell_exited() || old_terminal != self.active_terminal() {
@@ -529,11 +609,7 @@ impl State {
         // Reconcile once on attachment/selection/layout changes, not on every frame:
         // differently-sized windows must not fight over PTY sizes indefinitely.
         let layout_changed = old_tab.as_ref() != self.active_tab();
-        if let Some(snapshot) = &self.snapshot {
-            let visible: Vec<_> = snapshot.terminals.iter().map(|t| t.id).collect();
-            self.pane_sizes.retain(|id, _| visible.contains(id));
-            self.pane_grids.retain(|id, _| visible.contains(id));
-        }
+        self.retain_visible_pane_sizes();
         if (selection_changed || layout_changed) && self.ready() {
             for (id, (width, height)) in self.pane_sizes.clone() {
                 let grid = terminal_view::grid_for(width, height, &self.settings);

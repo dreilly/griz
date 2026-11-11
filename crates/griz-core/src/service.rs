@@ -134,6 +134,8 @@ pub struct Service {
     default_cwd: PathBuf,
     tx: SyncSender<Message>,
     workspaces: Vec<Workspace>,
+    /// Only the first attachment may set the bootstrap workspace's accent.
+    initial_workspace_unclaimed: bool,
     clients: BTreeMap<ClientId, Client>,
     next_workspace_id: WorkspaceId,
     next_terminal_id: TerminalId,
@@ -170,6 +172,7 @@ impl Service {
                 }],
                 next_terminal_number: 2,
             }],
+            initial_workspace_unclaimed: true,
             clients: BTreeMap::new(),
             next_workspace_id: 2,
             next_terminal_id: 2,
@@ -225,8 +228,9 @@ impl Service {
                         client_id,
                         cols,
                         rows,
+                        default_workspace_accent,
                         outbox,
-                    } => self.attach(client_id, cols, rows, outbox)?,
+                    } => self.attach(client_id, cols, rows, default_workspace_accent, outbox)?,
                     Message::Detach { client_id } => self.detach(client_id),
                     Message::Command {
                         client_id,
@@ -262,8 +266,17 @@ impl Service {
         client_id: ClientId,
         cols: u16,
         rows: u16,
+        default_workspace_accent: WorkspaceAccent,
         outbox: Arc<Outbox>,
     ) -> Result<()> {
+        // Initialize before publishing any view; never let a reconnect or another
+        // window's preferences overwrite a workspace's shared accent.
+        if self.initial_workspace_unclaimed {
+            self.initial_workspace_unclaimed = false;
+            if let Some(workspace) = self.workspaces.first_mut() {
+                workspace.accent = default_workspace_accent;
+            }
+        }
         // Directory polling sleeps without windows; refresh before reconnect.
         self.refresh_directories();
         let active_workspace = self.workspaces.first().map_or(0, |workspace| workspace.id);

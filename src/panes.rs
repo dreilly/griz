@@ -4,10 +4,25 @@ use crate::{
     ui::{Palette, button},
 };
 use griz_protocol::{PaneLayout, SplitDirection, TerminalId};
-use rune::{El, col, el, row, text};
+use rune::{El, Icon, col, el, icon, row, text};
+
+static ZOOM_ICON: Icon = Icon {
+    name: "griz-pane-zoom",
+    view: 16.0,
+    body: r#"<path d="M9 3h4v4M13 3L9 7M7 13H3V9M3 13l4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
+
+static UNZOOM_ICON: Icon = Icon {
+    name: "griz-pane-unzoom",
+    view: 16.0,
+    body: r#"<path d="M13 3L9 7m0-4v4h4M3 13l4-4m-4 0h4v4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>"#,
+};
 
 pub fn stage(state: &State, p: &Palette) -> El {
     if let Some(tab) = state.active_tab() {
+        if state.pane_zoomed() {
+            return card(state, p, state.active_terminal(), true);
+        }
         layout(
             state,
             p,
@@ -121,6 +136,38 @@ fn card(state: &State, p: &Palette, id: Option<TerminalId>, split: bool) -> El {
                 id,
                 SplitDirection::Horizontal,
             ))
+            .children(split.then(|| {
+                let zoomed = state.pane_zoomed();
+                let help = format!(
+                    "{} ({})",
+                    if zoomed {
+                        "Restore split layout"
+                    } else {
+                        "Zoom pane"
+                    },
+                    state
+                        .settings
+                        .label(crate::settings::Action::TogglePaneZoom),
+                );
+                pane_control(key("zoom-pane"), &help, p)
+                    .border(if zoomed { 1.0 } else { 0.0 }, accent)
+                    .focus_ring(2.0, -2.0, accent)
+                    .child(
+                        icon(
+                            if zoomed { &UNZOOM_ICON } else { &ZOOM_ICON },
+                            18.0 * state.settings.font_size / 14.0,
+                        )
+                        .key(key("zoom-pane-icon"))
+                        .color(if zoomed { accent } else { p.muted }),
+                    )
+                    .disabled(!state.can_zoom_pane())
+                    .on_press_tx(move |s: &mut State, tx| {
+                        if let Some(id) = id {
+                            s.toggle_pane_zoom(id);
+                        }
+                        tx.blur();
+                    })
+            }))
             .child(
                 pane_button(
                     key("close-pane"),
@@ -161,6 +208,10 @@ fn card(state: &State, p: &Palette, id: Option<TerminalId>, split: bool) -> El {
 }
 
 fn pane_button(key: String, icon: &str, help: &str, p: &Palette) -> El {
+    pane_control(key, help, p).child(text(icon).font(p.label).color(p.muted))
+}
+
+fn pane_control(key: String, help: &str, p: &Palette) -> El {
     row()
         .key(key)
         .role("button")
@@ -173,7 +224,6 @@ fn pane_button(key: String, icon: &str, help: &str, p: &Palette) -> El {
         .radius(4.0)
         .hover(p.button_fill())
         .focus_ring(2.0, -2.0, p.accent)
-        .child(text(icon).font(p.label).color(p.muted))
 }
 
 fn split_button(

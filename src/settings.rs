@@ -59,6 +59,7 @@ pub enum Action {
     SplitVertical,
     NextPane,
     PreviousPane,
+    TogglePaneZoom,
     NewWorkspace,
     ToggleSidebar,
     NextTab,
@@ -70,7 +71,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::NewTerminal,
         Self::CloseTerminal,
         Self::NewWorkspace,
@@ -85,6 +86,7 @@ impl Action {
         Self::SplitVertical,
         Self::NextPane,
         Self::PreviousPane,
+        Self::TogglePaneZoom,
     ];
 
     pub fn id(self) -> &'static str {
@@ -95,6 +97,7 @@ impl Action {
             Self::SplitVertical => "pane.split_vertical",
             Self::NextPane => "pane.next",
             Self::PreviousPane => "pane.previous",
+            Self::TogglePaneZoom => "pane.toggle_zoom",
             Self::NewWorkspace => "workspace.new",
             Self::ToggleSidebar => "sidebar.toggle",
             Self::NextTab => "tab.next",
@@ -114,6 +117,7 @@ impl Action {
             Self::SplitVertical => "Split vertically (left / right)",
             Self::NextPane => "Focus next pane",
             Self::PreviousPane => "Focus previous pane",
+            Self::TogglePaneZoom => "Toggle pane zoom",
             Self::NewWorkspace => "New workspace…",
             Self::ToggleSidebar => "Toggle sidebar",
             Self::NextTab => "Next tab",
@@ -133,6 +137,7 @@ impl Action {
             Self::SplitVertical => "mod+d",
             Self::NextPane => "mod+alt+right",
             Self::PreviousPane => "mod+alt+left",
+            Self::TogglePaneZoom => "mod+enter",
             Self::NewWorkspace => "mod+shift+n",
             Self::ToggleSidebar => "mod+b",
             Self::NextTab => "mod+shift+right",

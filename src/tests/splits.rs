@@ -1,7 +1,7 @@
 use super::*;
 use griz_protocol::{PaneLayout, SplitDirection};
 
-fn split_snapshot(direction: SplitDirection) -> ViewState {
+pub(super) fn split_snapshot(direction: SplitDirection) -> ViewState {
     let mut view = snapshot();
     view.workspaces[0].tabs = vec![TabInfo {
         id: 1,
@@ -19,7 +19,7 @@ fn split_snapshot(direction: SplitDirection) -> ViewState {
     view
 }
 
-fn split_runtime(direction: SplitDirection) -> (Runtime<State>, Receiver<Request>) {
+pub(super) fn split_runtime(direction: SplitDirection) -> (Runtime<State>, Receiver<Request>) {
     let (mut state, outgoing) = mock();
     state.apply(split_snapshot(direction));
     let mut rt = make_runtime(state, (1100.0, 720.0));
