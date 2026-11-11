@@ -125,6 +125,9 @@ pub struct Screen {
     /// True while any terminal mouse tracking mode (X10/1000/1002/1003) is active.
     #[serde(default)]
     pub mouse_tracking: bool,
+    /// Rows between this client's viewport and the live terminal area.
+    #[serde(default)]
+    pub scrollback_offset: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -346,6 +349,12 @@ pub enum Command {
         terminal_id: TerminalId,
         event: MouseInput,
     },
+    /// Scroll this client's viewport, never another window or the PTY itself.
+    /// Positive rows move down toward the live terminal area.
+    Scroll {
+        terminal_id: TerminalId,
+        rows: i32,
+    },
     Resize {
         terminal_id: TerminalId,
         cols: u16,
@@ -532,6 +541,15 @@ mod tests {
         }))
         .unwrap();
         assert!(!screen.mouse_tracking);
+        assert_eq!(screen.scrollback_offset, 0);
+        assert_eq!(
+            serde_json::to_value(Command::Scroll {
+                terminal_id: 7,
+                rows: -3
+            })
+            .unwrap(),
+            serde_json::json!({ "type": "scroll", "terminal_id": 7, "rows": -3 })
+        );
     }
 
     #[test]

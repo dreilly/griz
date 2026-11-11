@@ -3,6 +3,8 @@
 mod program_status;
 #[cfg(test)]
 mod program_status_tests;
+#[cfg(test)]
+mod scrollback_tests;
 
 use griz_protocol::{Cell, MouseAction, MouseButton, MouseInput, ProgramStatusRecord, Screen};
 use std::error;
@@ -43,6 +45,7 @@ struct GrizVtSnapshot {
     application_cursor: u8,
     bracketed_paste: u8,
     mouse_tracking: u8,
+    scrollback_offset: u64,
     cells: *mut GrizVtCell,
     cells_len: usize,
     text: *mut u8,
@@ -78,6 +81,9 @@ unsafe extern "C" {
         data: *mut *mut u8,
         len: *mut usize,
     ) -> c_int;
+    fn griz_vt_set_viewport(vt: *mut GrizVt, position: *mut c_void) -> c_int;
+    fn griz_vt_scroll(vt: *mut GrizVt, rows: i32, out: *mut *mut c_void) -> c_int;
+    fn griz_vt_viewport_free(position: *mut c_void);
     fn griz_vt_snapshot(vt: *mut GrizVt, out: *mut *mut GrizVtSnapshot) -> c_int;
     fn griz_vt_snapshot_free(snapshot: *mut GrizVtSnapshot);
     fn griz_vt_take_responses(vt: *mut GrizVt, data: *mut *mut u8, len: *mut usize);
@@ -114,6 +120,29 @@ impl fmt::Display for Error {
 }
 
 impl error::Error for Error {}
+
+/// One client's scroll position, tracked through output, pruning, and reflow.
+/// A default viewport follows live output. It is safe to drop after its terminal.
+#[derive(Default)]
+pub struct Viewport {
+    raw: *mut c_void,
+    _single_threaded: PhantomData<Rc<()>>,
+}
+
+impl Viewport {
+    /// Whether this viewport follows the live terminal area.
+    pub fn is_live(&self) -> bool {
+        self.raw.is_null()
+    }
+}
+
+impl Drop for Viewport {
+    fn drop(&mut self) {
+        // SAFETY: this is an owned tracked reference (or null). Ghostty permits
+        // freeing it even after the terminal has been destroyed.
+        unsafe { griz_vt_viewport_free(self.raw) };
+    }
+}
 
 /// A terminal emulator backed by libghostty-vt.
 ///
@@ -232,6 +261,47 @@ impl Terminal {
         Ok(bytes)
     }
 
+    /// Scroll one client's viewport by rows (negative is up).
+    pub fn scroll(&mut self, viewport: &mut Viewport, rows: i32) -> Result<(), Error> {
+        // SAFETY: both handles are live; viewport references remain safe even
+        // after their original terminal is freed.
+        check("restore viewport", unsafe {
+            griz_vt_set_viewport(self.raw.as_ptr(), viewport.raw)
+        })?;
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: the terminal and output pointer are valid.
+        let result = check("scroll viewport", unsafe {
+            griz_vt_scroll(self.raw.as_ptr(), rows, &mut raw)
+        });
+        // Always restore the live area, including on capture/allocation failure.
+        // SAFETY: null requests the live viewport on this terminal.
+        let restore = check("restore live viewport", unsafe {
+            griz_vt_set_viewport(self.raw.as_ptr(), std::ptr::null_mut())
+        });
+        result?;
+        *viewport = Viewport {
+            raw,
+            _single_threaded: PhantomData,
+        };
+        restore
+    }
+
+    /// Capture one client's history without changing any other client's view.
+    pub fn screen_at(&mut self, viewport: &Viewport) -> Result<Screen, Error> {
+        // SAFETY: the terminal and tracked reference are valid.
+        check("restore viewport", unsafe {
+            griz_vt_set_viewport(self.raw.as_ptr(), viewport.raw)
+        })?;
+        let result = self.screen();
+        // SAFETY: null requests the live viewport on this terminal.
+        let restore = check("restore live viewport", unsafe {
+            griz_vt_set_viewport(self.raw.as_ptr(), std::ptr::null_mut())
+        });
+        let screen = result?;
+        restore?;
+        Ok(screen)
+    }
+
     /// Captures the current visible viewport through Ghostty's RenderState API.
     pub fn screen(&mut self) -> Result<Screen, Error> {
         let mut raw_snapshot = std::ptr::null_mut();
@@ -346,6 +416,7 @@ impl Snapshot {
             application_cursor: snapshot.application_cursor != 0,
             bracketed_paste: snapshot.bracketed_paste != 0,
             mouse_tracking: snapshot.mouse_tracking != 0,
+            scrollback_offset: snapshot.scrollback_offset,
         })
     }
 }

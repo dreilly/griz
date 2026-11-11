@@ -65,11 +65,13 @@ pub fn viewport(state: &State, id: Option<TerminalId>, split: bool) -> El {
         .no_focus_ring()
         .clip_soft(0.0)
         .instant_changes()
-        .cursor(if screen.is_some_and(|s| s.mouse_tracking) {
-            Cursor::Default
-        } else {
-            Cursor::Text
-        })
+        .cursor(
+            if screen.is_some_and(|s| s.mouse_tracking && s.scrollback_offset == 0) {
+                Cursor::Default
+            } else {
+                Cursor::Text
+            },
+        )
         .pointer_buttons([PointerButton::Middle])
         .on_drag(move |state: &mut State, drag, tx| {
             if let Some(id) = id {
@@ -141,7 +143,7 @@ pub fn viewport(state: &State, id: Option<TerminalId>, split: bool) -> El {
             }
         }
     }
-    if active && !state.preedit.is_empty() {
+    if active && !state.preedit.is_empty() && screen.is_none_or(|s| s.scrollback_offset == 0) {
         let (x, y) = screen.map(|s| (s.cursor_x, s.cursor_y)).unwrap_or_default();
         viewport = viewport.child(
             text(state.preedit.clone())

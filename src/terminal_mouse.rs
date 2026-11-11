@@ -1,4 +1,4 @@
-//! Client-local selection and mouse gestures. Only application mouse events cross IPC.
+//! Client-local selection and mouse gestures; application input and history requests use IPC.
 use crate::{
     Command, State,
     terminal_view::{PAD, cell_size},
@@ -13,7 +13,7 @@ const TOAST_DURATION: Duration = Duration::from_secs(2);
 pub(crate) struct Interaction {
     pub selection: Option<Selection>,
     gesture: Option<Gesture>,
-    wheel: Option<(TerminalId, f32)>,
+    wheel: Option<(TerminalId, bool, f32)>,
     pub copied_until: Option<Instant>,
 }
 
@@ -251,7 +251,7 @@ pub fn drag(state: &mut State, id: TerminalId, drag: &Drag, tx: &mut Tx) {
             && !mods.shift
             && state
                 .pane_frame(id)
-                .is_some_and(|f| f.screen.mouse_tracking);
+                .is_some_and(|f| f.screen.mouse_tracking && f.screen.scrollback_offset == 0);
         let button = match tx.button() {
             PointerButton::Middle => MouseButton::Middle,
             _ => MouseButton::Left,
@@ -351,7 +351,7 @@ pub fn motion(state: &mut State, id: TerminalId, x: f32, y: f32, tx: &mut Tx) {
         && !tx.mods().shift
         && state
             .pane_frame(id)
-            .is_some_and(|f| f.screen.mouse_tracking)
+            .is_some_and(|f| f.screen.mouse_tracking && f.screen.scrollback_offset == 0)
     {
         send(state, id, MouseAction::Motion, None, x, y, tx.mods());
     }
@@ -363,7 +363,7 @@ pub fn secondary(state: &mut State, id: TerminalId, x: f32, y: f32, tx: &mut Tx)
         && !tx.mods().shift
         && state
             .pane_frame(id)
-            .is_some_and(|f| f.screen.mouse_tracking)
+            .is_some_and(|f| f.screen.mouse_tracking && f.screen.scrollback_offset == 0)
     {
         if state.active_terminal() != Some(id) {
             state.change(Command::SelectTerminal { terminal_id: id });
@@ -391,16 +391,16 @@ pub fn secondary(state: &mut State, id: TerminalId, x: f32, y: f32, tx: &mut Tx)
 }
 
 pub fn wheel(state: &mut State, id: TerminalId, wheel: WheelEvent, tx: &mut Tx) -> bool {
-    tx.live_only();
-    if !available(state, id, None)
-        || wheel.mods.shift
-        || !state
-            .pane_frame(id)
-            .is_some_and(|f| f.screen.mouse_tracking)
-    {
+    if !selectable(state, id, None) || !state.online || state.offline {
         state.terminal_mouse.wheel = None;
+        tx.live_only();
         return false;
     }
+    let reporting = available(state, id, None)
+        && !wheel.mods.shift
+        && state
+            .pane_frame(id)
+            .is_some_and(|f| f.screen.mouse_tracking && f.screen.scrollback_offset == 0);
     if wheel.phase == rune::GesturePhase::Began {
         state.terminal_mouse.wheel = None;
     }
@@ -408,12 +408,29 @@ pub fn wheel(state: &mut State, id: TerminalId, wheel: WheelEvent, tx: &mut Tx) 
     let previous = state
         .terminal_mouse
         .wheel
-        .filter(|(old, _)| *old == id)
-        .map_or(0.0, |(_, delta)| delta);
+        .filter(|(old, old_reporting, _)| *old == id && *old_reporting == reporting)
+        .map_or(0.0, |(_, _, delta)| delta);
     let delta = previous + wheel.dy / ch;
     let steps = delta.trunc().clamp(-32.0, 32.0) as i32;
     state.terminal_mouse.wheel =
-        (wheel.phase != rune::GesturePhase::Ended).then_some((id, delta.fract()));
+        (wheel.phase != rune::GesturePhase::Ended).then_some((id, reporting, delta.fract()));
+    if !reporting {
+        if steps != 0 {
+            if state.terminal_mouse.selection.take().is_some() {
+                tx.instant();
+            } else {
+                tx.live_only();
+            }
+            state.send(Command::Scroll {
+                terminal_id: id,
+                rows: -steps,
+            });
+        } else {
+            tx.live_only();
+        }
+        return true;
+    }
+    tx.live_only();
     let button = if steps > 0 {
         MouseButton::WheelUp
     } else {

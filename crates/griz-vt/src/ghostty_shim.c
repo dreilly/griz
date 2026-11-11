@@ -27,6 +27,7 @@ struct GrizVtSnapshot {
     uint8_t application_cursor;
     uint8_t bracketed_paste;
     uint8_t mouse_tracking;
+    uint64_t scrollback_offset;
     struct GrizVtCell* cells;
     size_t cells_len;
     uint8_t* text;
@@ -234,6 +235,51 @@ int griz_vt_resize(struct GrizVt* vt, uint16_t cols, uint16_t rows) {
         return GHOSTTY_INVALID_VALUE;
     }
     return ghostty_terminal_resize(vt->terminal, cols, rows, 0, 0);
+}
+
+// Viewports are client-owned tracked references. Keep the terminal at the live
+// area between captures so PTY writes, queries, and other clients are unaffected.
+int griz_vt_set_viewport(struct GrizVt* vt, GhosttyTrackedGridRef position) {
+    GhosttyTerminalScrollViewport scroll = {
+        .tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM,
+    };
+    GhosttyTerminalScreen screen;
+    int result = ghostty_terminal_get(vt->terminal,
+        GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen);
+    if (result != GHOSTTY_SUCCESS) return result;
+    if (position != NULL && screen == GHOSTTY_TERMINAL_SCREEN_PRIMARY) {
+        GhosttyPointCoordinate point;
+        result = ghostty_tracked_grid_ref_point(position, GHOSTTY_POINT_TAG_SCREEN, &point);
+        if (result == GHOSTTY_SUCCESS) {
+            scroll.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_ROW;
+            scroll.value.row = point.y;
+        } else if (result != GHOSTTY_NO_VALUE) {
+            return result;
+        }
+    }
+    return ghostty_terminal_scroll_viewport(vt->terminal, scroll);
+}
+
+int griz_vt_scroll(struct GrizVt* vt, int32_t rows, GhosttyTrackedGridRef* out) {
+    *out = NULL;
+    GhosttyTerminalScrollViewport scroll = {
+        .tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA,
+        .value.delta = rows,
+    };
+    int result = ghostty_terminal_scroll_viewport(vt->terminal, scroll);
+    if (result != GHOSTTY_SUCCESS) return result;
+    GhosttyTerminalScrollbar bar;
+    result = ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &bar);
+    if (result != GHOSTTY_SUCCESS || bar.offset + bar.len >= bar.total) return result;
+    GhosttyPoint point = {
+        .tag = GHOSTTY_POINT_TAG_VIEWPORT,
+        .value.coordinate = {.x = 0, .y = 0},
+    };
+    return ghostty_terminal_grid_ref_track(vt->terminal, point, out);
+}
+
+void griz_vt_viewport_free(GhosttyTrackedGridRef position) {
+    ghostty_tracked_grid_ref_free(position);
 }
 
 static int griz_mode(struct GrizVt* vt, GhosttyMode mode, uint8_t* out);
@@ -647,7 +693,12 @@ int griz_vt_snapshot(struct GrizVt* vt, struct GrizVtSnapshot** out) {
         goto fail;
     }
 
-    snapshot->cursor_visible = cursor.visible && cursor.viewport_has_value ? 1 : 0;
+    GhosttyTerminalScrollbar bar;
+    result = ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &bar);
+    if (result != GHOSTTY_SUCCESS) goto fail;
+    snapshot->scrollback_offset = bar.total - bar.len - bar.offset;
+    snapshot->cursor_visible = cursor.visible && cursor.viewport_has_value &&
+        snapshot->scrollback_offset == 0 ? 1 : 0;
     if (cursor.viewport_has_value) {
         snapshot->cursor_x = cursor.viewport_x;
         snapshot->cursor_y = cursor.viewport_y;

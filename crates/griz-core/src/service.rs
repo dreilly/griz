@@ -7,7 +7,7 @@ use griz_protocol::{
     PreviewFrame, PreviewTarget, Screen, SplitDirection, TabInfo, TerminalFrame, TerminalId,
     TerminalInfo, ViewState, WorkspaceAccent, WorkspaceId, WorkspaceInfo, dimensions,
 };
-use griz_vt::Terminal;
+use griz_vt::{Terminal, Viewport};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc::Receiver, mpsc::RecvTimeoutError, mpsc::SyncSender};
@@ -117,6 +117,7 @@ struct Client {
     selected: HashMap<WorkspaceId, Option<TerminalId>>,
     dimensions: Option<(u16, u16)>,
     preview: Option<PreviewTarget>,
+    viewports: HashMap<TerminalId, Viewport>,
     ack: u64,
     outbox: Arc<Outbox>,
 }
@@ -291,6 +292,7 @@ impl Service {
                 selected,
                 dimensions: client_dimensions,
                 preview: None,
+                viewports: HashMap::new(),
                 ack: 0,
                 outbox,
             },
@@ -341,6 +343,7 @@ impl Service {
             &command,
             Command::Input { .. }
                 | Command::Mouse { .. }
+                | Command::Scroll { .. }
                 | Command::Resize { .. }
                 | Command::SetPreview { .. }
         );
@@ -498,6 +501,11 @@ impl Service {
                     .map_err(|error| {
                         format!("terminal {terminal_id} input unavailable: {error}")
                     })?;
+                self.clients
+                    .get_mut(&client_id)
+                    .unwrap()
+                    .viewports
+                    .remove(&terminal_id);
                 Ok(Outcome::Input)
             }
             Command::Mouse { terminal_id, event } => {
@@ -523,6 +531,33 @@ impl Service {
                     })?;
                 }
                 Ok(Outcome::Input)
+            }
+            Command::Scroll { terminal_id, rows } => {
+                if !self.visible_terminal_ids(client_id).contains(&terminal_id) {
+                    return Err(format!("terminal {terminal_id} is not visible"));
+                }
+                let (workspace, terminal) = self
+                    .terminal_location(terminal_id)
+                    .ok_or_else(|| format!("unknown terminal {terminal_id}"))?;
+                let viewport = self
+                    .clients
+                    .get_mut(&client_id)
+                    .unwrap()
+                    .viewports
+                    .entry(terminal_id)
+                    .or_default();
+                self.workspaces[workspace].terminals[terminal]
+                    .vt
+                    .scroll(viewport, rows)
+                    .map_err(|error| format!("terminal {terminal_id} scroll: {error}"))?;
+                if viewport.is_live() {
+                    self.clients
+                        .get_mut(&client_id)
+                        .unwrap()
+                        .viewports
+                        .remove(&terminal_id);
+                }
+                Ok(Outcome::Requester)
             }
             Command::Resize {
                 terminal_id,
@@ -745,6 +780,9 @@ impl Service {
         let mut fallback_sizes = Vec::new();
         for client in self.clients.values_mut() {
             client.selected.remove(&workspace_id);
+            for terminal in &workspace.terminals {
+                client.viewports.remove(&terminal.id);
+            }
             if client.active_workspace == workspace_id {
                 client.active_workspace = fallback;
                 if let (Some(terminal_id), Some(size)) = (
@@ -800,6 +838,7 @@ impl Service {
         terminal.session.terminate();
         let mut fallback_sizes = Vec::new();
         for client in self.clients.values_mut() {
+            client.viewports.remove(&terminal_id);
             if client.selected.get(&workspace_id) == Some(&Some(terminal_id)) {
                 client.selected.insert(workspace_id, fallback);
                 if client.active_workspace == workspace_id
@@ -847,6 +886,9 @@ impl Service {
             &mut self.workspaces[workspace_index].terminals[terminal_index],
         );
         replacement.session.terminate();
+        for client in self.clients.values_mut() {
+            client.viewports.remove(&terminal_id);
+        }
         Ok(Outcome::Catalog)
     }
 
@@ -1030,10 +1072,19 @@ impl Service {
                 })
                 .map(Box::new);
             let visible = self.visible_terminal_ids(client_id);
-            let terminals: Vec<_> = frames
+            let mut terminals: Vec<_> = frames
                 .into_iter()
                 .filter(|frame| visible.contains(&frame.id))
                 .collect();
+            // Previews stay live; only real panes use this client's history.
+            for frame in &mut terminals {
+                let (workspace, terminal) = self.terminal_location(frame.id).unwrap();
+                if let Some(viewport) = self.clients[&client_id].viewports.get(&frame.id) {
+                    frame.screen = self.workspaces[workspace].terminals[terminal]
+                        .vt
+                        .screen_at(viewport)?;
+                }
+            }
             let terminal = active_terminal
                 .and_then(|terminal_id| terminals.iter().find(|frame| frame.id == terminal_id))
                 .cloned();

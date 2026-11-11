@@ -24,6 +24,8 @@ mod mouse;
 mod naming;
 #[path = "session/previews.rs"]
 mod previews;
+#[path = "session/scrollback.rs"]
+mod scrollback;
 #[path = "session/splits.rs"]
 mod splits;
 #[path = "session/workspaces.rs"]

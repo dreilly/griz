@@ -282,6 +282,11 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
 
 ### Terminal mouse and copying
 
+- Mouse wheel and trackpad scrolling browse the terminal's retained history in either
+  direction. Each window/pane has its own scroll position; incoming output keeps your
+  place, and typing returns to the live terminal. Hold **Shift** while scrolling to
+  browse terminal history instead of sending wheel events to a mouse-aware program.
+  Alternate-screen programs have no terminal history of their own.
 - Drag across terminal text to highlight it. Releasing the mouse automatically copies
   the selection and shows a **Copied to clipboard** toast near the bottom for two seconds.
   Double-click selects a word; triple-click selects a visible line. Wide Unicode and
@@ -402,7 +407,7 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 ## Current limits
 
 - No tab reordering/renaming, draggable split dividers, or remote transport yet.
-- No scrollback UI, images, hyperlinks, advanced terminal keyboard protocols,
+- No draggable scrollback scrollbar, images, hyperlinks, advanced terminal keyboard protocols,
   or full font/glyph shaping. Selection covers the visible grid; copied multi-row text
   uses newlines between visual rows (soft-wrapped logical lines are not yet distinguished).
   Secondary clicks are reported as press/release pairs; right-button dragging is not yet exposed by Rune.

@@ -61,6 +61,103 @@ fn mouse_commands(outgoing: &Receiver<Request>) -> Vec<(TerminalId, MouseInput)>
 }
 
 #[test]
+fn plain_terminal_wheel_scrolls_history_both_ways_without_typing_or_focusing() {
+    let (mut rt, outgoing, clipboard) = setup("hello", false);
+    let p = point(&rt, "terminal", 2.0, 0.5);
+    let ch = terminal_view::cell_size(&rt.state.settings).1;
+    for (delta, expected) in [(ch * 3.0, -3), (-ch * 2.0, 2)] {
+        rt.wheel_event(rune::WheelEvent::new(0.0, delta).at(p.0, p.1));
+        rt.frame(0.0);
+        assert!(matches!(commands(&outgoing).as_slice(),
+            [(_, Command::Scroll { terminal_id: 1, rows })] if *rows == expected));
+    }
+    assert_eq!(rt.state.active_terminal(), Some(1));
+    assert_eq!(clipboard.text(), "");
+}
+
+#[test]
+fn fractional_trackpad_history_deltas_accumulate_and_end_resets_them() {
+    let (mut rt, outgoing, _) = setup("hello", false);
+    let p = point(&rt, "terminal", 2.0, 0.5);
+    let delta = terminal_view::cell_size(&rt.state.settings).1 * 0.6;
+    let wheel = rune::WheelEvent::new(0.0, delta).at(p.0, p.1).precise(true);
+    rt.wheel_event(wheel);
+    rt.frame(0.0);
+    assert!(commands(&outgoing).is_empty());
+    rt.wheel_event(wheel);
+    rt.frame(0.0);
+    assert!(matches!(
+        commands(&outgoing).as_slice(),
+        [(_, Command::Scroll { rows: -1, .. })]
+    ));
+    rt.wheel_event(
+        rune::WheelEvent::new(0.0, 0.0)
+            .at(p.0, p.1)
+            .phase(rune::GesturePhase::Ended),
+    );
+    rt.frame(0.0);
+    rt.wheel_event(wheel);
+    rt.frame(0.0);
+    assert!(commands(&outgoing).is_empty());
+}
+
+#[test]
+fn shift_wheel_bypasses_application_tracking_for_terminal_history() {
+    let (mut rt, outgoing, _) = setup("hello", true);
+    let p = point(&rt, "terminal", 2.0, 0.5);
+    let ch = terminal_view::cell_size(&rt.state.settings).1;
+    rt.wheel_event(
+        rune::WheelEvent::new(0.0, ch * 2.0)
+            .at(p.0, p.1)
+            .mods(Mods {
+                shift: true,
+                ..Mods::default()
+            }),
+    );
+    rt.frame(0.0);
+    assert!(matches!(
+        commands(&outgoing).as_slice(),
+        [(
+            _,
+            Command::Scroll {
+                terminal_id: 1,
+                rows: -2
+            }
+        )]
+    ));
+}
+
+#[test]
+fn scrolled_history_can_be_selected_and_wheel_never_reaches_the_application() {
+    let (mut rt, outgoing, clipboard) = setup("hello", true);
+    rt.update(|state, _| {
+        let mut snapshot = state.snapshot.clone().unwrap();
+        snapshot.terminal.as_mut().unwrap().screen.scrollback_offset = 10;
+        state.apply(snapshot);
+    });
+    rt.frame(0.0);
+    let start = point(&rt, "terminal", 0.0, 0.5);
+    let end = point(&rt, "terminal", 5.0, 0.5);
+    select(&mut rt, start, end);
+    assert_eq!(clipboard.text(), "hello");
+    assert!(mouse_commands(&outgoing).is_empty());
+    let ch = terminal_view::cell_size(&rt.state.settings).1;
+    rt.wheel_event(rune::WheelEvent::new(0.0, -ch).at(start.0, start.1));
+    rt.frame(0.0);
+    assert!(matches!(
+        commands(&outgoing).as_slice(),
+        [(
+            _,
+            Command::Scroll {
+                terminal_id: 1,
+                rows: 1
+            }
+        )]
+    ));
+    assert!(rt.find("terminal-selection-0").is_none());
+}
+
+#[test]
 fn dragging_highlights_and_copies_only_on_release_with_a_bottom_toast() {
     let (mut rt, outgoing, clipboard) = setup("hello world", false);
     clipboard.set("untouched");
