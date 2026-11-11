@@ -268,6 +268,23 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   Closing targets the focused pane's captured terminal ID, not a tab or window.
   The Settings shortcut **⌘,** stays fixed so Settings is always reachable.
 
+### Terminal mouse and copying
+
+- Drag across terminal text to highlight it. Releasing the mouse automatically copies
+  the selection and shows a **Copied to clipboard** toast near the bottom for two seconds.
+  Double-click selects a word; triple-click selects a visible line. Wide Unicode and
+  combining characters are copied intact. **⌘C** or **Ctrl+Shift+C** copies it again;
+  **Escape** clears the highlight without sending Escape to the shell.
+- Programs that enable terminal mouse reporting receive primary/middle clicks and drags,
+  pointer motion, secondary clicks, and wheel/trackpad scrolling. Encoding follows the
+  program's current X10, UTF-8, SGR, URXVT, or SGR-pixel mode through libghostty.
+  Cell-based modes suppress repeated motion within the same cell, so pointer jitter does
+  not cancel TUI clicks (including Pi's logo animation). Pixel mode retains pixel motion.
+  Hold **Shift** while dragging to select/copy text instead of sending mouse events.
+- Selection is local to this window and pane; it never types the selected text into the
+  shell. Changing the screen contents/grid or navigating away clears stale highlights.
+  Cached text remains selectable after disconnect or shell exit.
+
 ### Quick navigation and command palette
 
 - Click the wide **search control** in the titlebar or press **⌘P** to open
@@ -365,14 +382,18 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 - Window/sidebar resize updates libghostty and every visible pane's PTY (SIGWINCH).
 - Enter, Backspace, Tab, arrows (including application cursor mode), common navigation
   and function keys, Ctrl-C/Ctrl-D, clipboard paste, and basic IME preedit/commit.
+- Terminal mouse reporting, visible-grid selection, automatic clipboard copy on release,
+  and a transient bottom copy confirmation.
 - Detach/reattach, background output, workspace/final-terminal close confirmation,
   ended-shell recovery.
 
 ## Current limits
 
 - No tab reordering/renaming, draggable split dividers, or remote transport yet.
-- No scrollback UI, selection/copy, mouse reporting, images, hyperlinks,
-  advanced terminal keyboard protocols, or full font/glyph shaping.
+- No scrollback UI, images, hyperlinks, advanced terminal keyboard protocols,
+  or full font/glyph shaping. Selection covers the visible grid; copied multi-row text
+  uses newlines between visual rows (soft-wrapped logical lines are not yet distinguished).
+  Secondary clicks are reported as press/release pairs; right-button dragging is not yet exposed by Rune.
 - Fixed-cell monospace rendering, not Ghostty's full renderer; basic shell/TUI use is the target.
   Dashed, double-line, rounded, and diagonal box drawing still uses the selected font.
   Shade blocks use uniform 25/50/75% foreground coverage rather than stippled patterns.
@@ -403,6 +424,9 @@ selection acknowledgements are pending, empty workspaces, and ended-shell recove
 Split tests cover nested layouts, both directions, rounded pane spacing, per-pane
 resizing, focus/input acknowledgement safety, cwd inheritance, sibling output,
 multi-client selection, layout collapse, stable tab IDs, and pane limits.
+Mouse tests cover mode-specific encoding, real PTY routing, split-pane targeting,
+Unicode/reverse/multiline selection, copy-on-release and toast expiry, Shift override,
+copy shortcuts, cancellation, scrolling, and stale-screen/disconnected handling.
 Navigation preview tests cover live hidden-pane output, subscription isolation,
 unchanged selection/dimensions, stale targets, dismissal, and fitted split miniatures.
 Agent tests cover native OSC 7501 negotiation/DA ordering, arbitrary PTY chunking,

@@ -4,7 +4,7 @@ mod program_status;
 #[cfg(test)]
 mod program_status_tests;
 
-use griz_protocol::{Cell, ProgramStatusRecord, Screen};
+use griz_protocol::{Cell, MouseAction, MouseButton, MouseInput, ProgramStatusRecord, Screen};
 use std::error;
 use std::ffi::{c_int, c_void};
 use std::fmt;
@@ -42,6 +42,7 @@ struct GrizVtSnapshot {
     cursor_visible: u8,
     application_cursor: u8,
     bracketed_paste: u8,
+    mouse_tracking: u8,
     cells: *mut GrizVtCell,
     cells_len: usize,
     text: *mut u8,
@@ -63,6 +64,20 @@ unsafe extern "C" {
     fn griz_vt_free(vt: *mut GrizVt);
     fn griz_vt_write(vt: *mut GrizVt, data: *const u8, len: usize);
     fn griz_vt_resize(vt: *mut GrizVt, cols: u16, rows: u16) -> c_int;
+    fn griz_vt_mouse_input(
+        vt: *mut GrizVt,
+        action: u8,
+        button: i8,
+        x: f32,
+        y: f32,
+        cell_width: u16,
+        cell_height: u16,
+        shift: u8,
+        alt: u8,
+        ctrl: u8,
+        data: *mut *mut u8,
+        len: *mut usize,
+    ) -> c_int;
     fn griz_vt_snapshot(vt: *mut GrizVt, out: *mut *mut GrizVtSnapshot) -> c_int;
     fn griz_vt_snapshot_free(snapshot: *mut GrizVtSnapshot);
     fn griz_vt_take_responses(vt: *mut GrizVt, data: *mut *mut u8, len: *mut usize);
@@ -167,6 +182,54 @@ impl Terminal {
         check("resize", unsafe {
             griz_vt_resize(self.raw.as_ptr(), cols, rows)
         })
+    }
+
+    /// Encodes a pixel-positioned mouse event using the terminal's active
+    /// tracking and output-format modes. An event ignored by those modes
+    /// returns an empty byte vector.
+    pub fn mouse_input(&mut self, event: &MouseInput) -> Result<Vec<u8>, Error> {
+        let action = match event.action {
+            MouseAction::Press => 0,
+            MouseAction::Release => 1,
+            MouseAction::Motion => 2,
+        };
+        let button = match event.button {
+            None => -1,
+            Some(MouseButton::Left) => 0,
+            Some(MouseButton::Right) => 1,
+            Some(MouseButton::Middle) => 2,
+            Some(MouseButton::WheelUp) => 3,
+            Some(MouseButton::WheelDown) => 4,
+        };
+        let mut data = std::ptr::null_mut();
+        let mut len = 0;
+        // SAFETY: the terminal handle is live, scalar values are copied, and
+        // successful output is transferred to the caller-owned C allocation.
+        check("encode mouse input", unsafe {
+            griz_vt_mouse_input(
+                self.raw.as_ptr(),
+                action,
+                button,
+                event.x,
+                event.y,
+                event.cell_width,
+                event.cell_height,
+                event.shift.into(),
+                event.alt.into(),
+                event.ctrl.into(),
+                &mut data,
+                &mut len,
+            )
+        })?;
+        let bytes = if len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: the shim returns `len` initialized bytes on success.
+            unsafe { slice::from_raw_parts(data, len) }.to_vec()
+        };
+        // SAFETY: the pointer was allocated by the shim and may be null.
+        unsafe { griz_vt_bytes_free(data) };
+        Ok(bytes)
     }
 
     /// Captures the current visible viewport through Ghostty's RenderState API.
@@ -282,6 +345,7 @@ impl Snapshot {
             title: String::from_utf8_lossy(title).into_owned(),
             application_cursor: snapshot.application_cursor != 0,
             bracketed_paste: snapshot.bracketed_paste != 0,
+            mouse_tracking: snapshot.mouse_tracking != 0,
         })
     }
 }
@@ -379,6 +443,215 @@ mod tests {
         let screen = terminal.screen().unwrap();
         assert_eq!(screen.cells[0][0].text, "p");
         assert_eq!(screen.cells[0][1].text, "r");
+    }
+
+    fn mouse(action: MouseAction, button: Option<MouseButton>, x: f32, y: f32) -> MouseInput {
+        MouseInput {
+            action,
+            button,
+            x,
+            y,
+            cell_width: 8,
+            cell_height: 16,
+            shift: false,
+            alt: false,
+            ctrl: false,
+        }
+    }
+
+    #[test]
+    fn mouse_tracking_state_and_disabled_encoding() {
+        let mut terminal = Terminal::new(80, 24).unwrap();
+        let event = mouse(MouseAction::Press, Some(MouseButton::Left), 8.0, 16.0);
+        assert!(!terminal.screen().unwrap().mouse_tracking);
+        assert!(terminal.mouse_input(&event).unwrap().is_empty());
+
+        for mode in [9, 1000, 1002, 1003] {
+            terminal.write(format!("\x1b[?{mode}h").as_bytes());
+            assert!(terminal.screen().unwrap().mouse_tracking);
+            terminal.write(format!("\x1b[?{mode}l").as_bytes());
+            assert!(!terminal.screen().unwrap().mouse_tracking);
+        }
+    }
+
+    #[test]
+    fn mouse_x10_and_sgr_press_release_motion_wheel_and_modifiers() {
+        let mut terminal = Terminal::new(80, 24).unwrap();
+        let press = mouse(MouseAction::Press, Some(MouseButton::Left), 8.0, 16.0);
+
+        terminal.write(b"\x1b[?9h");
+        assert_eq!(terminal.mouse_input(&press).unwrap(), b"\x1b[M \"\"");
+        assert!(
+            terminal
+                .mouse_input(&mouse(
+                    MouseAction::Release,
+                    Some(MouseButton::Left),
+                    8.0,
+                    16.0,
+                ))
+                .unwrap()
+                .is_empty()
+        );
+
+        terminal.write(b"\x1b[?9l\x1b[?1000h\x1b[?1006h");
+        assert_eq!(terminal.mouse_input(&press).unwrap(), b"\x1b[<0;2;2M");
+        assert_eq!(
+            terminal
+                .mouse_input(&mouse(
+                    MouseAction::Release,
+                    Some(MouseButton::Left),
+                    8.0,
+                    16.0,
+                ))
+                .unwrap(),
+            b"\x1b[<0;2;2m"
+        );
+        assert!(
+            terminal
+                .mouse_input(&mouse(MouseAction::Motion, None, 8.0, 16.0))
+                .unwrap()
+                .is_empty()
+        );
+
+        terminal.write(b"\x1b[?1002h");
+        assert_eq!(
+            terminal
+                .mouse_input(&mouse(
+                    MouseAction::Motion,
+                    Some(MouseButton::Left),
+                    8.0,
+                    16.0,
+                ))
+                .unwrap(),
+            b"\x1b[<32;2;2M"
+        );
+        assert!(
+            terminal
+                .mouse_input(&mouse(MouseAction::Motion, None, 8.0, 16.0))
+                .unwrap()
+                .is_empty()
+        );
+
+        terminal.write(b"\x1b[?1003h");
+        assert_eq!(
+            terminal
+                .mouse_input(&mouse(MouseAction::Motion, None, 8.0, 16.0))
+                .unwrap(),
+            b"\x1b[<35;2;2M"
+        );
+        assert_eq!(
+            terminal
+                .mouse_input(&mouse(
+                    MouseAction::Press,
+                    Some(MouseButton::WheelUp),
+                    8.0,
+                    16.0,
+                ))
+                .unwrap(),
+            b"\x1b[<64;2;2M"
+        );
+        assert_eq!(
+            terminal
+                .mouse_input(&mouse(
+                    MouseAction::Press,
+                    Some(MouseButton::WheelDown),
+                    8.0,
+                    16.0,
+                ))
+                .unwrap(),
+            b"\x1b[<65;2;2M"
+        );
+        let mut modified = press;
+        modified.shift = true;
+        modified.alt = true;
+        modified.ctrl = true;
+        assert_eq!(terminal.mouse_input(&modified).unwrap(), b"\x1b[<28;2;2M");
+    }
+
+    #[test]
+    fn sgr_click_ignores_pointer_jitter_within_the_pressed_cell() {
+        let mut terminal = Terminal::new(80, 24).unwrap();
+        terminal.write(b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
+        let press = mouse(MouseAction::Press, Some(MouseButton::Left), 20.0, 24.0);
+        assert_eq!(terminal.mouse_input(&press).unwrap(), b"\x1b[<0;3;2M");
+        // Pi re-renders on press. Output must not reset the encoder's last reported cell.
+        terminal.write(b"\x1b[Hredraw");
+        let jitter = mouse(MouseAction::Motion, Some(MouseButton::Left), 20.5, 24.5);
+        assert!(
+            terminal.mouse_input(&jitter).unwrap().is_empty(),
+            "same-cell motion turns Pi's logo click into a drag"
+        );
+        let release = mouse(MouseAction::Release, Some(MouseButton::Left), 20.5, 24.5);
+        assert_eq!(terminal.mouse_input(&release).unwrap(), b"\x1b[<0;3;2m");
+    }
+
+    #[test]
+    fn mouse_motion_dedup_preserves_real_drags_and_pixel_reporting() {
+        let mut terminal = Terminal::new(80, 24).unwrap();
+        terminal.write(b"\x1b[?1003h\x1b[?1006h");
+        let hover = mouse(MouseAction::Motion, None, 20.0, 24.0);
+        assert_eq!(terminal.mouse_input(&hover).unwrap(), b"\x1b[<35;3;2M");
+        assert!(terminal.mouse_input(&hover).unwrap().is_empty());
+        let press = mouse(MouseAction::Press, Some(MouseButton::Left), 20.0, 24.0);
+        assert_eq!(terminal.mouse_input(&press).unwrap(), b"\x1b[<0;3;2M");
+        let drag = mouse(MouseAction::Motion, Some(MouseButton::Left), 28.0, 24.0);
+        assert_eq!(terminal.mouse_input(&drag).unwrap(), b"\x1b[<32;4;2M");
+        assert!(terminal.mouse_input(&drag).unwrap().is_empty());
+        let release = mouse(MouseAction::Release, Some(MouseButton::Left), 28.0, 24.0);
+        assert_eq!(terminal.mouse_input(&release).unwrap(), b"\x1b[<0;4;2m");
+        // A second press/release in the same cell must not be deduplicated.
+        let press = mouse(MouseAction::Press, Some(MouseButton::Left), 28.0, 24.0);
+        assert_eq!(terminal.mouse_input(&press).unwrap(), b"\x1b[<0;4;2M");
+        assert_eq!(terminal.mouse_input(&release).unwrap(), b"\x1b[<0;4;2m");
+
+        terminal.write(b"\x1b[?1006l\x1b[?1016h");
+        assert_eq!(terminal.mouse_input(&press).unwrap(), b"\x1b[<0;28;24M");
+        // Pixel mode must still report movement inside the same character cell.
+        let pixel_drag = mouse(MouseAction::Motion, Some(MouseButton::Left), 29.0, 24.0);
+        assert_eq!(
+            terminal.mouse_input(&pixel_drag).unwrap(),
+            b"\x1b[<32;29;24M"
+        );
+    }
+
+    #[test]
+    fn mouse_geometry_changes_invalidate_motion_dedup() {
+        let mut terminal = Terminal::new(80, 24).unwrap();
+        terminal.write(b"\x1b[?1003h\x1b[?1006h");
+        let mut motion = mouse(MouseAction::Motion, None, 20.0, 24.0);
+        assert_eq!(terminal.mouse_input(&motion).unwrap(), b"\x1b[<35;3;2M");
+        motion.cell_width = 10;
+        assert_eq!(terminal.mouse_input(&motion).unwrap(), b"\x1b[<35;3;2M");
+        terminal.resize(100, 40).unwrap();
+        assert_eq!(terminal.mouse_input(&motion).unwrap(), b"\x1b[<35;3;2M");
+    }
+
+    #[test]
+    fn mouse_utf8_urxvt_and_sgr_pixels_follow_terminal_modes() {
+        let mut terminal = Terminal::new(400, 100).unwrap();
+        let event = mouse(MouseAction::Press, Some(MouseButton::Left), 2392.0, 32.0);
+
+        terminal.write(b"\x1b[?1000h\x1b[?1005h");
+        assert_eq!(
+            terminal.mouse_input(&event).unwrap(),
+            [b"\x1b[M ".as_slice(), "Ō".as_bytes(), b"#"].concat()
+        );
+
+        terminal.write(b"\x1b[?1005l\x1b[?1015h");
+        assert_eq!(terminal.mouse_input(&event).unwrap(), b"\x1b[32;300;3M");
+
+        terminal.write(b"\x1b[?1015l\x1b[?1016h");
+        assert_eq!(terminal.mouse_input(&event).unwrap(), b"\x1b[<0;2392;32M");
+    }
+
+    #[test]
+    fn invalid_mouse_geometry_is_rejected() {
+        let mut terminal = Terminal::new(80, 24).unwrap();
+        terminal.write(b"\x1b[?1000h");
+        let mut event = mouse(MouseAction::Press, Some(MouseButton::Left), 0.0, 0.0);
+        event.cell_width = 0;
+        let error = terminal.mouse_input(&event).unwrap_err();
+        assert_eq!(error.operation(), "encode mouse input");
     }
 
     #[test]

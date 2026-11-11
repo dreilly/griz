@@ -18,6 +18,8 @@ mod settings_tests;
 mod splits;
 #[path = "tests/terminal_graphics.rs"]
 mod terminal_graphics;
+#[path = "tests/terminal_mouse.rs"]
+mod terminal_mouse_tests;
 #[path = "tests/workspace_accents.rs"]
 mod workspace_accents;
 #[path = "tests/workspace_labels.rs"]

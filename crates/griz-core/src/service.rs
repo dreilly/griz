@@ -339,7 +339,10 @@ impl Service {
         // the next poll. Do not perform process queries on every keystroke or resize.
         let refresh = !matches!(
             &command,
-            Command::Input { .. } | Command::Resize { .. } | Command::SetPreview { .. }
+            Command::Input { .. }
+                | Command::Mouse { .. }
+                | Command::Resize { .. }
+                | Command::SetPreview { .. }
         );
         let outcome = self.apply_command(client_id, command);
         let directories_changed = refresh && self.refresh_directories();
@@ -495,6 +498,30 @@ impl Service {
                     .map_err(|error| {
                         format!("terminal {terminal_id} input unavailable: {error}")
                     })?;
+                Ok(Outcome::Input)
+            }
+            Command::Mouse { terminal_id, event } => {
+                let (workspace_index, terminal_index) = self
+                    .terminal_location(terminal_id)
+                    .ok_or_else(|| format!("unknown terminal {terminal_id}"))?;
+                let terminal = &mut self.workspaces[workspace_index].terminals[terminal_index];
+                if terminal.exited.is_some() {
+                    return Err(format!("terminal {terminal_id} has exited"));
+                }
+                let input = terminal
+                    .session
+                    .input()
+                    .cloned()
+                    .ok_or_else(|| format!("terminal {terminal_id} input is closed"))?;
+                let data = terminal
+                    .vt
+                    .mouse_input(&event)
+                    .map_err(|error| format!("terminal {terminal_id} mouse input: {error}"))?;
+                if !data.is_empty() {
+                    input.try_send(data).map_err(|error| {
+                        format!("terminal {terminal_id} input unavailable: {error}")
+                    })?;
+                }
                 Ok(Outcome::Input)
             }
             Command::Resize {

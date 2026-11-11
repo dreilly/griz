@@ -26,6 +26,7 @@ struct GrizVtSnapshot {
     uint8_t cursor_visible;
     uint8_t application_cursor;
     uint8_t bracketed_paste;
+    uint8_t mouse_tracking;
     struct GrizVtCell* cells;
     size_t cells_len;
     uint8_t* text;
@@ -40,6 +41,14 @@ struct GrizVt {
     GhosttyRenderState render_state;
     GhosttyRenderStateRowIterator row_iterator;
     GhosttyRenderStateRowCells row_cells;
+    GhosttyMouseEncoder mouse_encoder;
+    GhosttyMouseEvent mouse_event;
+    bool mouse_configured;
+    uint16_t mouse_modes;
+    uint16_t mouse_cols;
+    uint16_t mouse_rows;
+    uint16_t mouse_cell_width;
+    uint16_t mouse_cell_height;
     uint8_t* responses;
     size_t responses_len;
     size_t responses_cap;
@@ -109,6 +118,8 @@ static void griz_vt_free_partial(struct GrizVt* vt) {
         return;
     }
     free(vt->responses);
+    ghostty_mouse_event_free(vt->mouse_event);
+    ghostty_mouse_encoder_free(vt->mouse_encoder);
     ghostty_render_state_row_cells_free(vt->row_cells);
     ghostty_render_state_row_iterator_free(vt->row_iterator);
     ghostty_render_state_free(vt->render_state);
@@ -153,6 +164,23 @@ int griz_vt_new(
         return result;
     }
     result = ghostty_render_state_row_cells_new(NULL, &vt->row_cells);
+    if (result != GHOSTTY_SUCCESS) {
+        griz_vt_free_partial(vt);
+        return result;
+    }
+    result = ghostty_mouse_encoder_new(NULL, &vt->mouse_encoder);
+    if (result != GHOSTTY_SUCCESS) {
+        griz_vt_free_partial(vt);
+        return result;
+    }
+    bool track_last_cell = true;
+    result = ghostty_mouse_encoder_set(vt->mouse_encoder,
+        GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &track_last_cell);
+    if (result != GHOSTTY_SUCCESS) {
+        griz_vt_free_partial(vt);
+        return result;
+    }
+    result = ghostty_mouse_event_new(NULL, &vt->mouse_event);
     if (result != GHOSTTY_SUCCESS) {
         griz_vt_free_partial(vt);
         return result;
@@ -206,6 +234,180 @@ int griz_vt_resize(struct GrizVt* vt, uint16_t cols, uint16_t rows) {
         return GHOSTTY_INVALID_VALUE;
     }
     return ghostty_terminal_resize(vt->terminal, cols, rows, 0, 0);
+}
+
+static int griz_mode(struct GrizVt* vt, GhosttyMode mode, uint8_t* out);
+
+// set_from_terminal clears motion deduplication. Refresh it only when modes
+// actually change, not on every input event or ordinary application redraw.
+static int griz_mouse_sync_modes(struct GrizVt* vt) {
+    const GhosttyMode modes[] = {
+        GHOSTTY_MODE_MOUSE_EVENT_X10,
+        GHOSTTY_MODE_MOUSE_EVENT_NORMAL,
+        GHOSTTY_MODE_MOUSE_EVENT_BUTTON,
+        GHOSTTY_MODE_MOUSE_EVENT_ANY,
+        GHOSTTY_MODE_MOUSE_FORMAT_UTF8,
+        GHOSTTY_MODE_MOUSE_FORMAT_SGR,
+        GHOSTTY_MODE_MOUSE_FORMAT_URXVT,
+        GHOSTTY_MODE_MOUSE_FORMAT_SGR_PIXELS,
+    };
+    uint16_t bits = 0;
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        uint8_t enabled = 0;
+        int result = griz_mode(vt, modes[i], &enabled);
+        if (result != GHOSTTY_SUCCESS) return result;
+        if (enabled) bits |= (uint16_t)(1u << i);
+    }
+    if (vt->mouse_configured && vt->mouse_modes == bits) return GHOSTTY_SUCCESS;
+    int result = ghostty_mouse_encoder_set_from_terminal(vt->mouse_encoder, vt->terminal);
+    if (result == GHOSTTY_SUCCESS) {
+        vt->mouse_modes = bits;
+        vt->mouse_configured = true;
+    }
+    return result;
+}
+
+int griz_vt_mouse_input(
+    struct GrizVt* vt,
+    uint8_t action,
+    int8_t button,
+    float x,
+    float y,
+    uint16_t cell_width,
+    uint16_t cell_height,
+    uint8_t shift,
+    uint8_t alt,
+    uint8_t ctrl,
+    uint8_t** out_data,
+    size_t* out_len
+) {
+    if (vt == NULL || out_data == NULL || out_len == NULL) {
+        return GHOSTTY_INVALID_VALUE;
+    }
+    *out_data = NULL;
+    *out_len = 0;
+
+    GhosttyMouseAction ghostty_action;
+    switch (action) {
+    case 0: ghostty_action = GHOSTTY_MOUSE_ACTION_PRESS; break;
+    case 1: ghostty_action = GHOSTTY_MOUSE_ACTION_RELEASE; break;
+    case 2: ghostty_action = GHOSTTY_MOUSE_ACTION_MOTION; break;
+    default: return GHOSTTY_INVALID_VALUE;
+    }
+
+    GhosttyResult result = griz_mouse_sync_modes(vt);
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+
+    uint16_t cols = 0;
+    uint16_t rows = 0;
+    result = ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols);
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+    result = ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows);
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+    if (vt->mouse_cols != cols || vt->mouse_rows != rows ||
+        vt->mouse_cell_width != cell_width || vt->mouse_cell_height != cell_height) {
+        GhosttyMouseEncoderSize size = GHOSTTY_INIT_SIZED(GhosttyMouseEncoderSize);
+        size.screen_width = (uint32_t)cols * cell_width;
+        size.screen_height = (uint32_t)rows * cell_height;
+        size.cell_width = cell_width;
+        size.cell_height = cell_height;
+        result = ghostty_mouse_encoder_set(
+            vt->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size);
+        if (result != GHOSTTY_SUCCESS) return result;
+        result = ghostty_mouse_encoder_reset(vt->mouse_encoder);
+        if (result != GHOSTTY_SUCCESS) return result;
+        vt->mouse_cols = cols;
+        vt->mouse_rows = rows;
+        vt->mouse_cell_width = cell_width;
+        vt->mouse_cell_height = cell_height;
+    }
+
+    bool any_button_pressed = button >= 0 && ghostty_action != GHOSTTY_MOUSE_ACTION_RELEASE;
+    result = ghostty_mouse_encoder_set(
+        vt->mouse_encoder,
+        GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED,
+        &any_button_pressed
+    );
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+
+    result = ghostty_mouse_event_set_action(vt->mouse_event, ghostty_action);
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+    if (button < 0) {
+        result = ghostty_mouse_event_clear_button(vt->mouse_event);
+    } else {
+        GhosttyMouseButton ghostty_button;
+        switch (button) {
+        case 0: ghostty_button = GHOSTTY_MOUSE_BUTTON_LEFT; break;
+        case 1: ghostty_button = GHOSTTY_MOUSE_BUTTON_RIGHT; break;
+        case 2: ghostty_button = GHOSTTY_MOUSE_BUTTON_MIDDLE; break;
+        case 3: ghostty_button = GHOSTTY_MOUSE_BUTTON_FOUR; break;
+        case 4: ghostty_button = GHOSTTY_MOUSE_BUTTON_FIVE; break;
+        default: return GHOSTTY_INVALID_VALUE;
+        }
+        result = ghostty_mouse_event_set_button(vt->mouse_event, ghostty_button);
+    }
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+
+    GhosttyMods mods = 0;
+    if (shift) mods |= GHOSTTY_MODS_SHIFT;
+    if (alt) mods |= GHOSTTY_MODS_ALT;
+    if (ctrl) mods |= GHOSTTY_MODS_CTRL;
+    result = ghostty_mouse_event_set_mods(vt->mouse_event, mods);
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+    GhosttyMousePosition position = {.x = x, .y = y};
+    result = ghostty_mouse_event_set_position(vt->mouse_event, position);
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+
+    size_t needed = 0;
+    result = ghostty_mouse_encoder_encode(
+        vt->mouse_encoder,
+        vt->mouse_event,
+        NULL,
+        0,
+        &needed
+    );
+    if (result == GHOSTTY_SUCCESS && needed == 0) {
+        return GHOSTTY_SUCCESS;
+    }
+    if (result != GHOSTTY_OUT_OF_SPACE || needed == 0) {
+        return result;
+    }
+
+    uint8_t* data = malloc(needed);
+    if (data == NULL) {
+        return GHOSTTY_OUT_OF_MEMORY;
+    }
+    size_t written = 0;
+    result = ghostty_mouse_encoder_encode(
+        vt->mouse_encoder,
+        vt->mouse_event,
+        data,
+        needed,
+        &written
+    );
+    if (result != GHOSTTY_SUCCESS || written != needed) {
+        free(data);
+        return result == GHOSTTY_SUCCESS ? GHOSTTY_INVALID_VALUE : result;
+    }
+    *out_data = data;
+    *out_len = written;
+    return GHOSTTY_SUCCESS;
 }
 
 static int griz_mode(struct GrizVt* vt, GhosttyMode mode, uint8_t* out) {
@@ -459,6 +661,27 @@ int griz_vt_snapshot(struct GrizVt* vt, struct GrizVtSnapshot** out) {
     if (result != GHOSTTY_SUCCESS) {
         goto fail;
     }
+    uint8_t mouse_mode = 0;
+    result = griz_mode(vt, GHOSTTY_MODE_MOUSE_EVENT_X10, &mouse_mode);
+    if (result != GHOSTTY_SUCCESS) {
+        goto fail;
+    }
+    snapshot->mouse_tracking = mouse_mode;
+    result = griz_mode(vt, GHOSTTY_MODE_MOUSE_EVENT_NORMAL, &mouse_mode);
+    if (result != GHOSTTY_SUCCESS) {
+        goto fail;
+    }
+    snapshot->mouse_tracking |= mouse_mode;
+    result = griz_mode(vt, GHOSTTY_MODE_MOUSE_EVENT_BUTTON, &mouse_mode);
+    if (result != GHOSTTY_SUCCESS) {
+        goto fail;
+    }
+    snapshot->mouse_tracking |= mouse_mode;
+    result = griz_mode(vt, GHOSTTY_MODE_MOUSE_EVENT_ANY, &mouse_mode);
+    if (result != GHOSTTY_SUCCESS) {
+        goto fail;
+    }
+    snapshot->mouse_tracking |= mouse_mode;
 
     GhosttyString title;
     result = ghostty_terminal_get(vt->terminal, GHOSTTY_TERMINAL_DATA_TITLE, &title);

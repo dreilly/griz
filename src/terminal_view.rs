@@ -4,7 +4,7 @@ use crate::{
     settings::{Settings, Theme},
 };
 use griz_protocol::{Screen, TerminalId};
-use rune::{Color, El, Span, TextStyle, el, text};
+use rune::{Color, Cursor, El, PointerButton, Span, TextStyle, el, text};
 
 mod graphics;
 
@@ -65,15 +65,29 @@ pub fn viewport(state: &State, id: Option<TerminalId>, split: bool) -> El {
         .no_focus_ring()
         .clip_soft(0.0)
         .instant_changes()
-        .on_press_tx(move |state: &mut State, tx| {
+        .cursor(if screen.is_some_and(|s| s.mouse_tracking) {
+            Cursor::Default
+        } else {
+            Cursor::Text
+        })
+        .pointer_buttons([PointerButton::Middle])
+        .on_drag(move |state: &mut State, drag, tx| {
             if let Some(id) = id {
-                if state.active_terminal() == Some(id) {
-                    state.acknowledge_focused_agents();
-                } else {
-                    state.change(crate::Command::SelectTerminal { terminal_id: id });
-                }
+                crate::terminal_mouse::drag(state, id, drag, tx);
             }
-            tx.blur();
+        })
+        .on_pointer_move_local(move |state: &mut State, point, tx| {
+            if let Some(id) = id {
+                crate::terminal_mouse::motion(state, id, point.x, point.y, tx);
+            }
+        })
+        .on_secondary_press_local(move |state: &mut State, point, tx| {
+            if let Some(id) = id {
+                crate::terminal_mouse::secondary(state, id, point.x, point.y, tx);
+            }
+        })
+        .on_wheel(move |state: &mut State, wheel, tx| {
+            id.is_some_and(|id| crate::terminal_mouse::wheel(state, id, wheel, tx))
         })
         .on_key(move |state: &mut State, event, tx| {
             // Keyboard focus can outlive a catalog change. Never route a stale pane's
@@ -104,6 +118,28 @@ pub fn viewport(state: &State, id: Option<TerminalId>, split: bool) -> El {
                 .color(Color::WHITE)
                 .absolute(PAD, PAD),
         );
+    }
+    if let Some(selection) = state
+        .terminal_mouse
+        .selection
+        .as_ref()
+        .filter(|s| Some(s.id) == id)
+        && let Some(screen) = screen
+    {
+        for row in 0..usize::from(screen.rows) {
+            if let Some((start, end)) = selection.columns(row) {
+                viewport = viewport.child(
+                    el().key(format!("terminal-selection-{row}"))
+                        .size((end - start) as f32 * cell_width, cell_height)
+                        .fill(color([115, 170, 235]).alpha(0.32))
+                        .absolute(
+                            PAD + start as f32 * cell_width,
+                            PAD + row as f32 * cell_height,
+                        )
+                        .inert(),
+                );
+            }
+        }
     }
     if active && !state.preedit.is_empty() {
         let (x, y) = screen.map(|s| (s.cursor_x, s.cursor_y)).unwrap_or_default();

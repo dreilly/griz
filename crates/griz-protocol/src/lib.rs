@@ -80,6 +80,37 @@ pub struct Cell {
     pub underline: bool,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseAction {
+    Press,
+    Release,
+    Motion,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+    WheelUp,
+    WheelDown,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MouseInput {
+    pub action: MouseAction,
+    pub button: Option<MouseButton>,
+    pub x: f32,
+    pub y: f32,
+    pub cell_width: u16,
+    pub cell_height: u16,
+    pub shift: bool,
+    pub alt: bool,
+    pub ctrl: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Screen {
     pub cols: u16,
@@ -91,6 +122,9 @@ pub struct Screen {
     pub title: String,
     pub application_cursor: bool,
     pub bracketed_paste: bool,
+    /// True while any terminal mouse tracking mode (X10/1000/1002/1003) is active.
+    #[serde(default)]
+    pub mouse_tracking: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -308,6 +342,10 @@ pub enum Command {
         terminal_id: TerminalId,
         data: Vec<u8>,
     },
+    Mouse {
+        terminal_id: TerminalId,
+        event: MouseInput,
+    },
     Resize {
         terminal_id: TerminalId,
         cols: u16,
@@ -443,6 +481,57 @@ mod tests {
                 "direction": "vertical"
             })
         );
+    }
+
+    #[test]
+    fn mouse_input_schema_and_screen_default() {
+        let event = MouseInput {
+            action: MouseAction::Motion,
+            button: Some(MouseButton::Left),
+            x: 12.5,
+            y: 34.0,
+            cell_width: 8,
+            cell_height: 16,
+            shift: true,
+            alt: false,
+            ctrl: true,
+        };
+        assert_eq!(
+            serde_json::to_value(Command::Mouse {
+                terminal_id: 7,
+                event: event.clone(),
+            })
+            .unwrap(),
+            serde_json::json!({
+                "type": "mouse",
+                "terminal_id": 7,
+                "event": {
+                    "action": "motion",
+                    "button": "left",
+                    "x": 12.5,
+                    "y": 34.0,
+                    "cell_width": 8,
+                    "cell_height": 16,
+                    "shift": true,
+                    "alt": false,
+                    "ctrl": true
+                }
+            })
+        );
+
+        let screen: Screen = serde_json::from_value(serde_json::json!({
+            "cols": 1,
+            "rows": 1,
+            "cells": [],
+            "cursor_x": 0,
+            "cursor_y": 0,
+            "cursor_visible": true,
+            "title": "",
+            "application_cursor": false,
+            "bracketed_paste": false
+        }))
+        .unwrap();
+        assert!(!screen.mouse_tracking);
     }
 
     #[test]

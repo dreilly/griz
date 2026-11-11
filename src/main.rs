@@ -7,6 +7,7 @@ mod navigation_preview;
 mod panes;
 mod settings;
 mod settings_ui;
+mod terminal_mouse;
 mod terminal_view;
 mod ui;
 mod workspace_ui;
@@ -57,6 +58,7 @@ struct State {
     shortcut_search: TextEdit,
     palette: command_palette::PaletteState,
     completion_sweeps: agents_ui::CompletionSweeps,
+    terminal_mouse: terminal_mouse::Interaction,
     pane_sizes: HashMap<TerminalId, (f32, f32)>,
     pane_grids: HashMap<TerminalId, (u16, u16)>,
 }
@@ -87,6 +89,7 @@ impl Default for State {
             shortcut_search: TextEdit::new(""),
             palette: command_palette::PaletteState::default(),
             completion_sweeps: Default::default(),
+            terminal_mouse: Default::default(),
             pane_sizes: HashMap::new(),
             pane_grids: HashMap::new(),
         }
@@ -95,6 +98,7 @@ impl Default for State {
 
 impl State {
     fn open_settings(&mut self, tx: &mut Tx) {
+        terminal_mouse::cancel(self);
         command_palette::close(self);
         self.dialog = None;
         self.preedit.clear();
@@ -392,6 +396,7 @@ impl State {
         {
             self.acknowledge_focused_agents();
         }
+        terminal_mouse::cancel(self);
         self.notice = None;
         if let Some(serial) = self.send(command) {
             self.pending = Some(serial);
@@ -435,13 +440,15 @@ impl State {
             self.notice = Some("Input rejected: paste limit is 256 KiB".into());
             return true;
         }
+        let had_selection = self.terminal_mouse.selection.take().is_some();
         if let Some(terminal_id) = self.active_terminal() {
             return self
                 .send(Command::Input {
                     terminal_id,
                     data: bytes,
                 })
-                .is_none();
+                .is_none()
+                || had_selection;
         }
         false
     }
@@ -479,7 +486,24 @@ impl State {
         {
             self.dialog = None;
         }
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|old| old.core_pid != snapshot.core_pid)
+            || self.terminal_mouse.selection.as_ref().is_some_and(|s| {
+                self.pane_frame(s.id).is_some_and(|old| {
+                    snapshot
+                        .terminals
+                        .iter()
+                        .chain(snapshot.terminal.iter())
+                        .any(|new| new.id == s.id && new.shell_pid != old.shell_pid)
+                })
+            })
+        {
+            terminal_mouse::discard(self);
+        }
         self.snapshot = Some(snapshot);
+        terminal_mouse::reconcile(self);
         if self.shell_exited() || old_terminal != self.active_terminal() {
             self.preedit.clear();
         }
@@ -576,6 +600,7 @@ impl State {
             _ => "",
         };
         let value = value.to_owned();
+        terminal_mouse::cancel(self);
         command_palette::close(self);
         self.draft = TextEdit::new(value);
         self.draft.focused = !matches!(
@@ -615,8 +640,9 @@ impl State {
 }
 
 fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
+    let toast_changed = terminal_mouse::poll(state, tx);
     let Some(client) = &state.client else {
-        return false;
+        return toast_changed;
     };
     let (snapshot, error, disconnected) = {
         let mut inbox = client.inbox.lock().unwrap();
@@ -626,7 +652,7 @@ fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
             std::mem::take(&mut inbox.disconnected),
         )
     };
-    let changed = snapshot.is_some() || error.is_some() || disconnected;
+    let changed = toast_changed || snapshot.is_some() || error.is_some() || disconnected;
     if let Some(snapshot) = snapshot {
         state.apply(snapshot);
     }
@@ -634,6 +660,7 @@ fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
         state.notice = Some(error);
     }
     if disconnected {
+        terminal_mouse::cancel(state);
         if matches!(state.dialog, Some(Dialog::WorkspaceMenu(..))) {
             state.dialog = None;
         }
@@ -717,6 +744,19 @@ fn terminal_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if state.settings_open || state.dialog.is_some() || state.palette.is_open() {
         return false;
+    }
+    if (rune::Chord::parse("mod+c").unwrap().matches_tx(event, tx)
+        || rune::Chord::parse("ctrl+shift+c")
+            .unwrap()
+            .matches_tx(event, tx))
+        && terminal_mouse::copy_selection(state, tx)
+    {
+        return true;
+    }
+    if event.key == rune::Key::Escape && state.terminal_mouse.selection.is_some() {
+        terminal_mouse::cancel(state);
+        tx.instant();
+        return true;
     }
     let application_cursor = state.screen().is_some_and(|s| s.application_cursor);
     if let Some(bytes) = input::encode(event, application_cursor) {

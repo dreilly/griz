@@ -452,6 +452,29 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 .child(sidebar)
                 .child(terminal),
         )
+        .children(state.terminal_mouse.copied_until.map(|_| {
+            row()
+                .key("clipboard-toast")
+                .role("status")
+                .label("Copied to clipboard")
+                .live_region(rune::LiveRegion::Polite)
+                .px(14.0)
+                .py(9.0)
+                .gap(8.0)
+                .center_y()
+                .fill(p.panel)
+                .border(1.0, p.line)
+                .radius(8.0)
+                .anchored(
+                    "terminal-status",
+                    rune::Side::Top,
+                    rune::Align::Center,
+                    12.0,
+                )
+                .inert()
+                .child(text("✓").font(p.label).color(p.accent))
+                .child(text("Copied to clipboard").font(p.label).color(p.ink))
+        }))
         .children(dialog(state, &p, cx))
         .children(crate::settings_ui::panel(state, &p))
         .children(crate::command_palette::panel(state, &p, cx))

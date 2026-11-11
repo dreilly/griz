@@ -99,6 +99,7 @@ pub(crate) fn open(state: &mut State, action: Action, tx: &mut Tx) {
     if state.settings_open || state.dialog.is_some() {
         return;
     }
+    crate::terminal_mouse::cancel(state);
     let mode = if action == Action::QuickOpen {
         Mode::Navigate
     } else {

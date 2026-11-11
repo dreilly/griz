@@ -1,7 +1,7 @@
 //! Exercise the real service, PTYs, shells, terminal parser, and local IPC.
 use griz_protocol::{
-    Command as CoreCommand, Event, PaneLayout, Request, Screen, SplitDirection, ViewState, receive,
-    send,
+    Command as CoreCommand, Event, MouseAction, MouseButton, MouseInput, PaneLayout, Request,
+    Screen, SplitDirection, ViewState, receive, send,
 };
 use std::fs;
 use std::io;
@@ -18,6 +18,8 @@ mod accents;
 mod agents;
 #[path = "session/input_latency.rs"]
 mod input_latency;
+#[path = "session/mouse.rs"]
+mod mouse;
 #[path = "session/naming.rs"]
 mod naming;
 #[path = "session/previews.rs"]
