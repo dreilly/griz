@@ -143,6 +143,17 @@ connection, and a scratch shell, all in unrelated directories.
   pane equally and can be nested, up to eight panes per tab. Each pane has its own
   rounded frame, separated by a 10-point gap. The new shell inherits the target
   shell's current directory. All visible panes update independently, including unfocused ones.
+- **Resize panes:** drag the gap between any two split branches, horizontally or
+  vertically. Nested dividers resize only their branch; each visible shell reflows
+  immediately. Double-click a divider to restore an even split. Proportions are local
+  to this window and survive pane focus changes and zoom; new/rearranged splits start
+  evenly sized. Minimum sizes keep headers and terminal content usable where space permits.
+- **Rearrange panes:** drag the centered six-dot grip in a split pane's header.
+  Drop in another pane's center to swap positions, or near its left/right/top/bottom
+  edge to place the pane there. A tinted preview shows the destination before release.
+  Escape cancels a move or restores a resize; dropping outside the panes does nothing.
+  Moving preserves the existing shells and tab identity, and syncs the layout to other
+  windows. Rearranging is within the current tab; restore a zoomed layout before dragging.
 - **Zoom a pane:** click **⤢** in a split pane's header or press **⌘Enter** to
   make the focused pane fill the terminal content area without making the window
   fullscreen or hiding the sidebar/tabs. Other panes keep running; the zoom control
@@ -150,8 +161,7 @@ connection, and a scratch shell, all in unrelated directories.
   **⌘Enter** again to restore the original split layout. Pane-focus shortcuts still
   cycle through panes while zoomed. Zoom is remembered per tab in this window only;
   creating a split reveals the layout, and closing down to one pane clears zoom.
-  **⌥⌘→ / ⌥⌘←** cycle pane focus within the current tab. Split ratios are fixed at
-  50/50 for now; draggable dividers are not implemented.
+  **⌥⌘→ / ⌥⌘←** cycle pane focus within the current tab.
 - Right-click any workspace for **Rename workspace…**,
   **Close workspace…**, and an **Accent color** swatch row: blue, purple, pink, orange,
   green, or graphite, using Rune’s accent palette. Green is the default. The workspace’s
@@ -491,7 +501,7 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 
 ## Current limits
 
-- No tab reordering/renaming, draggable split dividers, or remote transport yet.
+- No tab reordering/renaming, pane dragging across tabs/windows, or remote transport yet.
 - No draggable scrollback scrollbar, images, hyperlinks, advanced terminal keyboard protocols,
   or full font/glyph shaping. Selection covers the visible grid; copied multi-row text
   uses newlines between visual rows (soft-wrapped logical lines are not yet distinguished).
@@ -525,7 +535,10 @@ GUI tests cover navigation, dialogs, paste, toolbar focus, input routing while
 selection acknowledgements are pending, empty workspaces, and ended-shell recovery.
 Split tests cover nested layouts, both directions, rounded pane spacing, per-pane
 resizing, focus/input acknowledgement safety, cwd inheritance, sibling output,
-multi-client selection, layout collapse, stable tab IDs, and pane limits.
+multi-client selection, layout collapse, stable tab IDs, and pane limits. Pane interaction
+tests cover both resize axes, nested dividers, minimum sizes, centered drag grips,
+swap/edge drop previews, cancellation, topology changes, and input gating. Core move
+tests verify process preservation, directional reparenting, and invalid/stale targets.
 Mouse tests cover mode-specific encoding, real PTY routing, split-pane targeting,
 Unicode/reverse/multiline selection, copy-on-release and toast expiry, Shift override,
 copy shortcuts, cancellation, scrolling, and stale-screen/disconnected handling.

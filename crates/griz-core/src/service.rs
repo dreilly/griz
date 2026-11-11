@@ -4,8 +4,8 @@ use crate::validation::{directory_label, directory_path, validate_cwd, workspace
 use crate::{ClientId, Message};
 use griz_protocol::{
     Command, Event, MAX_INPUT, MAX_PANES_PER_TAB, MAX_TERMINALS, MAX_WORKSPACES, PaneLayout,
-    PreviewFrame, PreviewTarget, Screen, SplitDirection, TabInfo, TerminalFrame, TerminalId,
-    TerminalInfo, ViewState, WorkspaceAccent, WorkspaceId, WorkspaceInfo, dimensions,
+    PanePlacement, PreviewFrame, PreviewTarget, Screen, SplitDirection, TabInfo, TerminalFrame,
+    TerminalId, TerminalInfo, ViewState, WorkspaceAccent, WorkspaceId, WorkspaceInfo, dimensions,
 };
 use griz_vt::{Terminal, Viewport};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -496,6 +496,11 @@ impl Service {
                 terminal_id,
                 direction,
             } => self.split_terminal(client_id, terminal_id, direction),
+            Command::MovePane {
+                terminal_id,
+                target_terminal_id,
+                placement,
+            } => self.move_pane(client_id, terminal_id, target_terminal_id, placement),
             Command::CloseTerminal { terminal_id } => self.close_terminal(terminal_id),
             Command::Input { terminal_id, data } => {
                 if data.len() > MAX_INPUT {
@@ -770,6 +775,95 @@ impl Service {
             .unwrap()
             .selected
             .insert(workspace_id, Some(new_terminal_id));
+        Ok(Outcome::Catalog)
+    }
+
+    fn move_pane(
+        &mut self,
+        client_id: ClientId,
+        terminal_id: TerminalId,
+        target_terminal_id: TerminalId,
+        placement: PanePlacement,
+    ) -> std::result::Result<Outcome, String> {
+        let (workspace_index, _) = self
+            .terminal_location(terminal_id)
+            .ok_or_else(|| format!("unknown terminal {terminal_id}"))?;
+        let (target_workspace_index, _) = self
+            .terminal_location(target_terminal_id)
+            .ok_or_else(|| format!("unknown terminal {target_terminal_id}"))?;
+        if terminal_id == target_terminal_id {
+            return Err(format!(
+                "cannot move terminal {terminal_id} relative to itself"
+            ));
+        }
+
+        let workspace_id = self.workspaces[workspace_index].id;
+        if self.clients[&client_id].active_workspace != workspace_id {
+            return Err(format!(
+                "terminal {terminal_id} is not in the active workspace"
+            ));
+        }
+        if workspace_index != target_workspace_index {
+            return Err(format!(
+                "terminals {terminal_id} and {target_terminal_id} are not in the same tab"
+            ));
+        }
+
+        let source_tab_index = self.workspaces[workspace_index]
+            .tabs
+            .iter()
+            .position(|tab| tab.layout.contains(terminal_id))
+            .ok_or_else(|| format!("terminal {terminal_id} is not in a tab"))?;
+        let target_tab_index = self.workspaces[workspace_index]
+            .tabs
+            .iter()
+            .position(|tab| tab.layout.contains(target_terminal_id))
+            .ok_or_else(|| format!("terminal {target_terminal_id} is not in a tab"))?;
+        if source_tab_index != target_tab_index {
+            return Err(format!(
+                "terminals {terminal_id} and {target_terminal_id} are not in the same tab"
+            ));
+        }
+
+        let selected = self.clients[&client_id]
+            .selected
+            .get(&workspace_id)
+            .copied()
+            .flatten()
+            .ok_or_else(|| format!("workspace {workspace_id} has no selected terminal"))?;
+        if !self.workspaces[workspace_index].tabs[source_tab_index]
+            .layout
+            .contains(selected)
+        {
+            return Err(format!("terminal {terminal_id} is not in the selected tab"));
+        }
+
+        let original = self.workspaces[workspace_index].tabs[source_tab_index]
+            .layout
+            .clone();
+        let layout = if placement == PanePlacement::Swap {
+            let mut layout = original;
+            if !swap_layout_terminals(&mut layout, terminal_id, target_terminal_id) {
+                return Err("cannot swap pane layout".into());
+            }
+            layout
+        } else {
+            let (layout, _) = remove_from_layout(original, terminal_id);
+            let mut layout = layout.ok_or_else(|| {
+                format!("cannot move the only pane in tab for terminal {terminal_id}")
+            })?;
+            if !insert_around_terminal(&mut layout, target_terminal_id, terminal_id, placement) {
+                return Err(format!("terminal {target_terminal_id} is not in a tab"));
+            }
+            layout
+        };
+
+        self.workspaces[workspace_index].tabs[source_tab_index].layout = layout;
+        self.clients
+            .get_mut(&client_id)
+            .unwrap()
+            .selected
+            .insert(workspace_id, Some(terminal_id));
         Ok(Outcome::Catalog)
     }
 
@@ -1355,6 +1449,73 @@ fn split_layout(
         PaneLayout::Split { first, second, .. } => {
             split_layout(first, terminal_id, new_terminal_id, direction)
                 || split_layout(second, terminal_id, new_terminal_id, direction)
+        }
+    }
+}
+
+fn swap_layout_terminals(
+    layout: &mut PaneLayout,
+    first_terminal_id: TerminalId,
+    second_terminal_id: TerminalId,
+) -> bool {
+    fn swap(
+        layout: &mut PaneLayout,
+        first_terminal_id: TerminalId,
+        second_terminal_id: TerminalId,
+    ) -> (bool, bool) {
+        match layout {
+            PaneLayout::Leaf { terminal_id } if *terminal_id == first_terminal_id => {
+                *terminal_id = second_terminal_id;
+                (true, false)
+            }
+            PaneLayout::Leaf { terminal_id } if *terminal_id == second_terminal_id => {
+                *terminal_id = first_terminal_id;
+                (false, true)
+            }
+            PaneLayout::Leaf { .. } => (false, false),
+            PaneLayout::Split { first, second, .. } => {
+                let left = swap(first, first_terminal_id, second_terminal_id);
+                let right = swap(second, first_terminal_id, second_terminal_id);
+                (left.0 || right.0, left.1 || right.1)
+            }
+        }
+    }
+
+    swap(layout, first_terminal_id, second_terminal_id) == (true, true)
+}
+
+fn insert_around_terminal(
+    layout: &mut PaneLayout,
+    target_terminal_id: TerminalId,
+    terminal_id: TerminalId,
+    placement: PanePlacement,
+) -> bool {
+    match layout {
+        PaneLayout::Leaf {
+            terminal_id: target,
+        } if *target == target_terminal_id => {
+            let target = PaneLayout::Leaf {
+                terminal_id: target_terminal_id,
+            };
+            let source = PaneLayout::Leaf { terminal_id };
+            let (direction, first, second) = match placement {
+                PanePlacement::Left => (SplitDirection::Vertical, source, target),
+                PanePlacement::Right => (SplitDirection::Vertical, target, source),
+                PanePlacement::Top => (SplitDirection::Horizontal, source, target),
+                PanePlacement::Bottom => (SplitDirection::Horizontal, target, source),
+                PanePlacement::Swap => return false,
+            };
+            *layout = PaneLayout::Split {
+                direction,
+                first: Box::new(first),
+                second: Box::new(second),
+            };
+            true
+        }
+        PaneLayout::Leaf { .. } => false,
+        PaneLayout::Split { first, second, .. } => {
+            insert_around_terminal(first, target_terminal_id, terminal_id, placement)
+                || insert_around_terminal(second, target_terminal_id, terminal_id, placement)
         }
     }
 }

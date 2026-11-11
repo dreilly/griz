@@ -26,7 +26,13 @@ that every version has been tested. Include your exact macOS version in feedback
 ## Things to try
 
 - Create and switch workspaces; open and close terminal tabs.
-- Split panes with **⌘D** / **⇧⌘D**, resize the window, and run your normal shell tools.
+- Split panes with **⌘D** / **⇧⌘D** and drag the gaps to resize them; double-click
+  a divider to return to an even split. Try nested splits and resizing the window.
+- Drag a pane's centered six-dot header grip onto another pane: drop in the center
+  to swap, or near an edge to place it left/right/above/below. Check the preview;
+  **Escape** cancels a move or restores a resize. Existing shells should keep running.
+- Zoom a pane with **⌘Enter**, then restore it and check that its sizes are remembered.
+  Run your normal shell tools and try changing pane focus while they produce output.
 - Use **⌘P** to search, **⇧⌘P** for commands, and **⌘,** for settings.
 - Select text, copy and paste, scroll through history, and use a terminal editor.
 - Quit and reopen Griz: the same terminal sessions should still be there.

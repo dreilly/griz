@@ -65,6 +65,7 @@ struct State {
     zoomed_tabs: HashSet<TerminalId>,
     pane_sizes: HashMap<TerminalId, (f32, f32)>,
     pane_grids: HashMap<TerminalId, (u16, u16)>,
+    pane_interaction: panes::Interaction,
 }
 
 impl Default for State {
@@ -97,6 +98,7 @@ impl Default for State {
             zoomed_tabs: HashSet::new(),
             pane_sizes: HashMap::new(),
             pane_grids: HashMap::new(),
+            pane_interaction: Default::default(),
         }
     }
 }
@@ -297,6 +299,7 @@ impl State {
         if self.active_terminal() != Some(terminal_id) {
             self.change(Command::SelectTerminal { terminal_id });
         }
+        panes::reconcile(self);
         self.retain_visible_pane_sizes();
     }
 
@@ -576,6 +579,7 @@ impl State {
             .is_some_and(|old| old.core_pid != snapshot.core_pid)
         {
             self.zoomed_tabs.clear();
+            self.pane_interaction = Default::default();
         }
         self.zoomed_tabs.retain(|id| {
             snapshot.workspaces.iter().any(|w| {
@@ -585,6 +589,7 @@ impl State {
             })
         });
         self.snapshot = Some(snapshot);
+        panes::reconcile(self);
         terminal_mouse::reconcile(self);
         if self.shell_exited() || old_terminal != self.active_terminal() {
             self.preedit.clear();
@@ -820,6 +825,9 @@ fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
 }
 
 fn terminal_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    if panes::gesture_key(state, event) {
+        return true;
+    }
     if app_shortcut(state, event, tx) {
         return true;
     }
@@ -851,6 +859,9 @@ fn terminal_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
 }
 
 fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    if panes::gesture_key(state, event) {
+        return true;
+    }
     if tx.focused().is_none() {
         terminal_key(state, event, tx)
     } else {

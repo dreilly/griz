@@ -16,6 +16,8 @@ mod harness_icons;
 mod input_latency;
 #[path = "tests/navigation_previews.rs"]
 mod navigation_previews;
+#[path = "tests/pane_interaction.rs"]
+mod pane_interaction;
 #[path = "tests/pane_zoom.rs"]
 mod pane_zoom;
 #[path = "tests/settings.rs"]

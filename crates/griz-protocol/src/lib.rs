@@ -23,6 +23,16 @@ pub enum SplitDirection {
     Vertical,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PanePlacement {
+    Swap,
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PaneLayout {
@@ -349,6 +359,12 @@ pub enum Command {
         terminal_id: TerminalId,
         direction: SplitDirection,
     },
+    /// Move an existing pane within its selected tab without replacing its terminal.
+    MovePane {
+        terminal_id: TerminalId,
+        target_terminal_id: TerminalId,
+        placement: PanePlacement,
+    },
     /// Explicitly end this terminal, including its running process.
     /// Closing the final terminal also removes its workspace.
     CloseTerminal {
@@ -501,6 +517,20 @@ mod tests {
                 "type": "split_terminal",
                 "terminal_id": 7,
                 "direction": "vertical"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(Command::MovePane {
+                terminal_id: 7,
+                target_terminal_id: 9,
+                placement: PanePlacement::Left,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "type": "move_pane",
+                "terminal_id": 7,
+                "target_terminal_id": 9,
+                "placement": "left"
             })
         );
     }

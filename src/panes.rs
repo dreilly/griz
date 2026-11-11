@@ -4,7 +4,16 @@ use crate::{
     ui::{Palette, button},
 };
 use griz_protocol::{PaneLayout, SplitDirection, TerminalId};
-use rune::{El, Icon, col, el, icon, row, text};
+use rune::{Cursor, El, Icon, col, el, icon, row, text};
+
+mod interaction;
+pub use interaction::{Interaction, gesture_key, reconcile};
+
+static GRIP_ICON: Icon = Icon {
+    name: "griz-pane-grip",
+    view: 16.0,
+    body: r#"<g fill="currentColor"><circle cx="5" cy="3" r="1.2"/><circle cx="11" cy="3" r="1.2"/><circle cx="5" cy="8" r="1.2"/><circle cx="11" cy="8" r="1.2"/><circle cx="5" cy="13" r="1.2"/><circle cx="11" cy="13" r="1.2"/></g>"#,
+};
 
 static ZOOM_ICON: Icon = Icon {
     name: "griz-pane-zoom",
@@ -47,14 +56,51 @@ fn layout(state: &State, p: &Palette, node: &PaneLayout, split: bool, path: &str
                 SplitDirection::Horizontal => col(),
                 SplitDirection::Vertical => row(),
             };
+            let ratio = interaction::ratio(state, path, node);
+            let tab_id = state.active_tab().unwrap().id;
+            let rect_path = path.to_owned();
+            let drag_path = path.to_owned();
+            let reset_path = path.to_owned();
+            let drag_layout = node.clone();
+            let vertical = *direction == SplitDirection::Vertical;
+            let divider = el()
+                .key(format!("pane-divider-{path}"))
+                .role("separator")
+                .label(if vertical {
+                    "Resize panes left / right"
+                } else {
+                    "Resize panes top / bottom"
+                })
+                .help("Drag to resize panes · double-click to reset equal sizes")
+                .cursor(if vertical {
+                    Cursor::ResizeColumn
+                } else {
+                    Cursor::ResizeRow
+                })
+                .hover(p.accent.alpha(0.18))
+                .radius(4.0)
+                .on_drag(move |s: &mut State, drag, tx| {
+                    interaction::resize(s, &drag_path, &drag_layout, drag, tx);
+                })
+                .on_double_press(move |s: &mut State| interaction::reset(s, &reset_path));
+            let divider = if vertical {
+                divider.w(10.0).h_full()
+            } else {
+                divider.h(10.0).w_full()
+            };
             container
                 .key(format!("pane-split-{path}"))
                 .grow(1.0)
                 .min_w(0.0)
                 .min_h(0.0)
-                .gap(10.0)
-                .child(layout(state, p, first, split, &format!("{path}-first")))
-                .child(layout(state, p, second, split, &format!("{path}-second")))
+                .instant_changes()
+                .on_layout_tx(move |s: &mut State, rect, tx| {
+                    interaction::split_rect(s, tab_id, &rect_path, rect);
+                    tx.live_only();
+                })
+                .child(layout(state, p, first, split, &format!("{path}-first")).grow(ratio))
+                .child(divider)
+                .child(layout(state, p, second, split, &format!("{path}-second")).grow(1.0 - ratio))
         }
     }
 }
@@ -183,6 +229,72 @@ fn card(state: &State, p: &Palette, id: Option<TerminalId>, split: bool) -> El {
                 }),
             ),
     );
+    // Keep the grab handle at the actual center, independent of label/control widths.
+    if split {
+        header = header.child(
+            row()
+                .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .center()
+                .child(
+                    pane_control(
+                        key("move-pane"),
+                        "Drag pane · center to swap, edge to split",
+                        p,
+                    )
+                    .focusable(false)
+                    .cursor(
+                        if state
+                            .pane_interaction
+                            .dragging
+                            .as_ref()
+                            .is_some_and(|m| Some(m.source) == id)
+                        {
+                            Cursor::Grabbing
+                        } else {
+                            Cursor::Grab
+                        },
+                    )
+                    .disabled(!state.ready() || state.pane_zoomed())
+                    .child(icon(&GRIP_ICON, 16.0).color(p.muted))
+                    .on_drag(move |s: &mut State, drag, tx| {
+                        if let Some(id) = id {
+                            interaction::move_pane(s, id, drag, tx);
+                        }
+                    }),
+                ),
+        );
+    }
+    let preview = state
+        .pane_interaction
+        .dragging
+        .as_ref()
+        .and_then(|m| m.target)
+        .filter(|(target, _)| Some(*target) == id)
+        .and_then(|(target, placement)| {
+            state.pane_interaction.pane_rects.get(&target).map(|rect| {
+                let [x, y, w, h] = interaction::preview_rect(*rect, placement);
+                row()
+                    .key(key("pane-drop-preview"))
+                    .absolute(x, y)
+                    .w(w)
+                    .h(h)
+                    .radius(10.0)
+                    .fill(accent.alpha(0.14))
+                    .border(2.0, accent.alpha(0.85))
+                    .center()
+                    .child(
+                        text(match placement {
+                            griz_protocol::PanePlacement::Swap => "Swap panes",
+                            griz_protocol::PanePlacement::Left => "Move left",
+                            griz_protocol::PanePlacement::Right => "Move right",
+                            griz_protocol::PanePlacement::Top => "Move above",
+                            griz_protocol::PanePlacement::Bottom => "Move below",
+                        })
+                        .font(p.label)
+                        .color(p.ink),
+                    )
+            })
+        });
     col()
         .key(key("terminal-card"))
         .grow(1.0)
@@ -193,6 +305,12 @@ fn card(state: &State, p: &Palette, id: Option<TerminalId>, split: bool) -> El {
         .fill(terminal_view::background_for(state.settings.theme))
         .border(1.0, if active { accent.alpha(0.55) } else { p.line })
         .focus_within_ring(1.0, -1.0, accent.alpha(0.85))
+        .on_layout_tx(move |s: &mut State, rect, tx| {
+            if let Some(id) = id {
+                interaction::pane_rect(s, id, rect);
+            }
+            tx.live_only();
+        })
         .child(
             col()
                 .key(key("terminal-content"))
@@ -205,6 +323,7 @@ fn card(state: &State, p: &Palette, id: Option<TerminalId>, split: bool) -> El {
                 .child(header)
                 .child(terminal_view::viewport(state, id, split)),
         )
+        .children(preview)
 }
 
 fn pane_button(key: String, icon: &str, help: &str, p: &Palette) -> El {
