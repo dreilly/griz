@@ -512,7 +512,7 @@ fn workspace_dialog_keeps_typing_out_of_the_shell_and_creates_named_collection()
     );
     click(&mut rt, "dialog-submit");
     assert!(commands(&outgoing).iter().any(
-        |(_, c)| matches!(c, Command::CreateWorkspace { name } if name == "Unrelated things")
+        |(_, c)| matches!(c, Command::CreateWorkspace { name, .. } if name == "Unrelated things")
     ));
     assert!(rt.find("dialog").is_none());
 }
@@ -527,7 +527,7 @@ fn workspace_name_can_be_left_blank_on_create_and_rename() {
     click(&mut rt, "dialog-submit");
     let sent = commands(&outgoing);
     assert_eq!(sent.len(), 1);
-    assert!(matches!(&sent[0].1, Command::CreateWorkspace { name } if name.is_empty()));
+    assert!(matches!(&sent[0].1, Command::CreateWorkspace { name, .. } if name.is_empty()));
     // Acknowledge creation before opening a second dialog.
     let mut updated = snapshot();
     updated.ack = sent[0].0;
@@ -693,7 +693,7 @@ fn closing_the_last_workspace_leaves_creation_available() {
     assert!(
         commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::CreateWorkspace { name } if name == "Fresh"))
+            .any(|(_, c)| matches!(c, Command::CreateWorkspace { name, .. } if name == "Fresh"))
     );
 }
 
@@ -851,7 +851,7 @@ fn empty_workspace_button_creates_a_default_named_workspace_without_a_dialog() {
     click(&mut rt, "empty-workspaces-create");
     let sent = commands(&outgoing);
     assert_eq!(sent.len(), 1);
-    assert!(matches!(&sent[0].1, Command::CreateWorkspace { name } if name.is_empty()));
+    assert!(matches!(&sent[0].1, Command::CreateWorkspace { name, .. } if name.is_empty()));
     assert!(rt.state.dialog.is_none());
     assert!(rt.state.pending.is_some());
     click(&mut rt, "empty-workspaces-create");

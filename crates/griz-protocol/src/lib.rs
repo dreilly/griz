@@ -305,6 +305,9 @@ pub enum Command {
     /// The first terminal inherits that directory, or the service default if none is selected.
     CreateWorkspace {
         name: String,
+        /// Chosen by the creating GUI. Older clients omit it and get green.
+        #[serde(default)]
+        accent: WorkspaceAccent,
     },
     /// Blank names use the directory of the selected terminal in this workspace.
     RenameWorkspace {
@@ -549,6 +552,36 @@ mod tests {
             })
             .unwrap(),
             serde_json::json!({ "type": "scroll", "terminal_id": 7, "rows": -3 })
+        );
+    }
+
+    #[test]
+    fn workspace_creation_defaults_legacy_clients_to_green_and_preserves_explicit_accents() {
+        let legacy: Command =
+            serde_json::from_str(r#"{"type":"create_workspace","name":"Project"}"#).unwrap();
+        assert!(matches!(
+            legacy,
+            Command::CreateWorkspace {
+                accent: WorkspaceAccent::Green,
+                ..
+            }
+        ));
+        for accent in WorkspaceAccent::ALL {
+            let command = Command::CreateWorkspace {
+                name: "Project".into(),
+                accent,
+            };
+            let decoded: Command =
+                serde_json::from_value(serde_json::to_value(command).unwrap()).unwrap();
+            assert!(
+                matches!(decoded, Command::CreateWorkspace { name, accent: chosen } if name == "Project" && chosen == accent)
+            );
+        }
+        assert!(
+            serde_json::from_str::<Command>(
+                r#"{"type":"create_workspace","name":"","accent":"invalid"}"#
+            )
+            .is_err()
         );
     }
 

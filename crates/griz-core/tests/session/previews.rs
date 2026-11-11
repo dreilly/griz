@@ -13,6 +13,7 @@ fn previews_stream_hidden_split_output_without_selecting_or_resizing() {
         1,
         CoreCommand::CreateWorkspace {
             name: "Preview me".into(),
+            accent: Default::default(),
         },
     );
     let created = ack(&mut stream, 1);
@@ -133,6 +134,7 @@ fn removed_and_mismatched_preview_targets_are_safe() {
         1,
         CoreCommand::CreateWorkspace {
             name: "Temporary".into(),
+            accent: Default::default(),
         },
     );
     let created = ack(&mut stream, 1);

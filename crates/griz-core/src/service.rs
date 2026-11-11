@@ -408,7 +408,9 @@ impl Service {
                 self.clients.get_mut(&client_id).unwrap().preview = target;
                 Ok(Outcome::Requester)
             }
-            Command::CreateWorkspace { name } => self.create_workspace(client_id, name),
+            Command::CreateWorkspace { name, accent } => {
+                self.create_workspace(client_id, name, accent)
+            }
             Command::RenameWorkspace { workspace_id, name } => {
                 let index = self
                     .workspaces
@@ -580,6 +582,7 @@ impl Service {
         &mut self,
         client_id: ClientId,
         name: String,
+        accent: WorkspaceAccent,
     ) -> std::result::Result<Outcome, String> {
         if self.workspaces.len() >= MAX_WORKSPACES {
             return Err(format!("workspace limit ({MAX_WORKSPACES}) reached"));
@@ -605,7 +608,7 @@ impl Service {
         self.workspaces.push(Workspace {
             id: workspace_id,
             custom_name,
-            accent: WorkspaceAccent::default(),
+            accent,
             terminals: vec![terminal],
             tabs: vec![TabInfo {
                 id: terminal_id,

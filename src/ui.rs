@@ -56,17 +56,18 @@ fn palette(settings: &crate::settings::Settings) -> Palette {
     }
 }
 
-/// Regular actions use the same Soft surface as the button-style sample.
-pub(crate) fn button(key: impl Into<String>, label: &str, p: &Palette) -> El {
-    styled_button(key, label, p, crate::settings::WorkspaceButtonStyle::Soft)
+#[derive(Clone, Copy)]
+enum ButtonStyle {
+    Soft,
+    Ghost,
 }
 
-fn styled_button(
-    key: impl Into<String>,
-    label: &str,
-    p: &Palette,
-    style: crate::settings::WorkspaceButtonStyle,
-) -> El {
+/// All regular actions use a quiet, neutral Soft surface.
+pub(crate) fn button(key: impl Into<String>, label: &str, p: &Palette) -> El {
+    styled_button(key, label, p, ButtonStyle::Soft)
+}
+
+fn styled_button(key: impl Into<String>, label: &str, p: &Palette, style: ButtonStyle) -> El {
     styled_button_with_leading(key, label, p, style, [])
 }
 
@@ -74,7 +75,7 @@ fn styled_button_with_leading(
     key: impl Into<String>,
     label: &str,
     p: &Palette,
-    style: crate::settings::WorkspaceButtonStyle,
+    style: ButtonStyle,
     leading: impl IntoIterator<Item = El>,
 ) -> El {
     button_surface(
@@ -88,7 +89,7 @@ fn styled_button_with_leading(
             .gap(6.0)
             .center_y()
             .children(leading)
-            .child(text(label).font(p.label).color(button_ink(style, p))),
+            .child(text(label).font(p.label).color(p.ink)),
         style,
         p,
     )
@@ -120,7 +121,7 @@ fn sidebar_toggle(state: &State, p: &Palette) -> El {
                     .key("sidebar-icon")
                     .color(if state.sidebar_open { p.ink } else { p.muted }),
             ),
-        crate::settings::WorkspaceButtonStyle::Soft,
+        ButtonStyle::Soft,
         p,
     )
     .on_press_tx(|s: &mut State, tx| {
@@ -342,7 +343,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                             format!("tab-{id}"),
                             &label,
                             &p,
-                            crate::settings::WorkspaceButtonStyle::Ghost,
+                            ButtonStyle::Ghost,
                             harnesses
                                 .iter()
                                 .map(|h| h.badge(format!("tab-{id}-harness-{}", h.key()), &p)),
@@ -505,78 +506,23 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .children(crate::command_palette::panel(state, &p, cx))
 }
 
-fn button_ink(style: crate::settings::WorkspaceButtonStyle, p: &Palette) -> Color {
-    if style == crate::settings::WorkspaceButtonStyle::Solid {
-        p.bg
-    } else {
-        p.ink
-    }
-}
-
-/// Theme-relative colors keep Soft neutral on both charcoal and midnight surfaces.
-/// Regular controls, the empty-state action, and gallery samples share every interaction state.
-fn button_surface(element: El, style: crate::settings::WorkspaceButtonStyle, p: &Palette) -> El {
-    use crate::settings::WorkspaceButtonStyle;
-    let (fill, border, hover, press, radius) = match style {
-        WorkspaceButtonStyle::Soft => (
-            p.button_fill(),
-            p.button_fill(),
-            p.ink.alpha(0.12),
-            p.ink.alpha(0.18),
-            6.0,
-        ),
-        WorkspaceButtonStyle::Outline => (
-            Color::TRANSPARENT,
-            p.ink.alpha(0.35),
-            p.ink.alpha(0.05),
-            p.ink.alpha(0.10),
-            6.0,
-        ),
-        WorkspaceButtonStyle::Solid => (
-            p.ink,
-            Color::TRANSPARENT,
-            p.ink.alpha(0.90),
-            p.ink.alpha(0.75),
-            6.0,
-        ),
-        WorkspaceButtonStyle::Ghost => (
-            Color::TRANSPARENT,
-            Color::TRANSPARENT,
-            p.ink.alpha(0.06),
-            p.ink.alpha(0.12),
-            6.0,
-        ),
-        WorkspaceButtonStyle::Pill => (
-            p.ink.alpha(0.08),
-            p.ink.alpha(0.18),
-            p.ink.alpha(0.12),
-            p.ink.alpha(0.18),
-            999.0,
-        ),
-        WorkspaceButtonStyle::Accent => (
-            p.accent.alpha(0.12),
-            p.accent.alpha(0.25),
-            p.accent.alpha(0.18),
-            p.accent.alpha(0.24),
-            6.0,
-        ),
+/// Neutral surfaces for regular actions and transparent tab labels.
+fn button_surface(element: El, style: ButtonStyle, p: &Palette) -> El {
+    let (fill, hover, press) = match style {
+        ButtonStyle::Soft => (p.button_fill(), p.ink.alpha(0.12), p.ink.alpha(0.18)),
+        ButtonStyle::Ghost => (Color::TRANSPARENT, p.ink.alpha(0.06), p.ink.alpha(0.12)),
     };
     element
-        .radius(radius)
+        .radius(6.0)
         .fill(fill)
-        .border(1.0, border)
+        .border(1.0, fill)
         .hover(hover)
         .press(press)
         .focus_ring(2.0, 2.0, p.ink.alpha(0.65))
 }
 
-/// Shared by the real action and Settings samples so previews stay exact.
-pub(crate) fn workspace_button(
-    key: impl Into<String>,
-    style: crate::settings::WorkspaceButtonStyle,
-    p: &Palette,
-    label_key: impl Into<String>,
-) -> El {
+/// The empty-state action uses the same Soft surface as every regular button.
+fn workspace_button(key: impl Into<String>, p: &Palette, label_key: impl Into<String>) -> El {
     button_surface(
         col()
             .key(key)
@@ -590,10 +536,10 @@ pub(crate) fn workspace_button(
                 text("Create a workspace to get started")
                     .key(label_key)
                     .font(p.label)
-                    .color(button_ink(style, p))
+                    .color(p.ink)
                     .wrap(),
             ),
-        style,
+        ButtonStyle::Soft,
         p,
     )
 }
@@ -611,20 +557,16 @@ fn empty_workspaces(state: &State, p: &Palette, cx: &Cx<State>) -> El {
         .padding(24.0)
         .center()
         .child(
-            workspace_button(
-                "empty-workspaces-create",
-                state.settings.workspace_button_style,
-                p,
-                "empty-workspaces-message",
-            )
-            .disabled(!state.ready())
-            .max_w(available_width)
-            .on_press_tx(|s: &mut State, tx| {
-                s.change(Command::CreateWorkspace {
-                    name: String::new(),
-                });
-                tx.blur();
-            }),
+            workspace_button("empty-workspaces-create", p, "empty-workspaces-message")
+                .disabled(!state.ready())
+                .max_w(available_width)
+                .on_press_tx(|s: &mut State, tx| {
+                    s.change(Command::CreateWorkspace {
+                        name: String::new(),
+                        accent: s.settings.default_workspace_accent,
+                    });
+                    tx.blur();
+                }),
         )
 }
 

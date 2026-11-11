@@ -2,6 +2,54 @@ use super::*;
 use griz_protocol::WorkspaceAccent;
 
 #[test]
+fn workspace_creation_sets_the_requested_accent_atomically_for_every_client() {
+    let service = Service::start();
+    let mut first = service.attach(80, 24);
+    next_view(&mut first);
+    let mut observer = service.attach(80, 24);
+    let original = next_view(&mut observer);
+    for (index, accent) in WorkspaceAccent::ALL.into_iter().enumerate() {
+        let serial = index as u64 + 1;
+        command(
+            &mut first,
+            serial,
+            CoreCommand::CreateWorkspace {
+                name: format!("Project {index}"),
+                accent,
+            },
+        );
+        let created = ack(&mut first, serial);
+        let id = created.active_workspace;
+        assert_eq!(
+            created
+                .workspaces
+                .iter()
+                .find(|w| w.id == id)
+                .unwrap()
+                .accent,
+            accent
+        );
+        let seen = view(until(
+            &mut observer,
+            |event| matches!(event, Event::View { state } if state.workspaces.iter().any(|w| w.id == id)),
+        ));
+        assert_eq!(
+            seen.workspaces.iter().find(|w| w.id == id).unwrap().accent,
+            accent
+        );
+        assert_eq!(seen.workspaces[0].accent, WorkspaceAccent::Green);
+        assert_eq!(seen.active_workspace, original.active_workspace);
+        assert_eq!(seen.active_terminal, original.active_terminal);
+    }
+    let mut reconnected = service.attach(80, 24);
+    let restored = next_view(&mut reconnected);
+    assert_eq!(
+        restored.workspaces.last().unwrap().accent,
+        WorkspaceAccent::Graphite
+    );
+}
+
+#[test]
 fn workspace_accents_sync_across_clients_and_reconnect_without_changing_selections() {
     let service = Service::start();
     let mut first = service.attach(80, 24);
@@ -12,6 +60,7 @@ fn workspace_accents_sync_across_clients_and_reconnect_without_changing_selectio
         1,
         CoreCommand::CreateWorkspace {
             name: "Project".into(),
+            accent: Default::default(),
         },
     );
     let created = ack(&mut first, 1);

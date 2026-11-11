@@ -265,6 +265,7 @@ fn workspace_catalog_and_each_clients_selection_are_independent() {
         1,
         CoreCommand::CreateWorkspace {
             name: "  Project  ".into(),
+            accent: Default::default(),
         },
     );
     let created = ack(&mut first, 1);
@@ -491,6 +492,7 @@ fn rejected_serial_still_gets_feedback_without_decreasing_ack() {
         2,
         CoreCommand::CreateWorkspace {
             name: "x".repeat(81),
+            accent: Default::default(),
         },
     );
     until(&mut stream, |event| {
@@ -569,6 +571,7 @@ fn invalid_creation_is_atomic_and_workspace_switch_remembers_the_selected_tab() 
         2,
         CoreCommand::CreateWorkspace {
             name: "bad\u{7}name".into(),
+            accent: Default::default(),
         },
     );
     until(&mut stream, |e| {
@@ -595,6 +598,7 @@ fn invalid_creation_is_atomic_and_workspace_switch_remembers_the_selected_tab() 
         4,
         CoreCommand::CreateWorkspace {
             name: "Independent".into(),
+            accent: Default::default(),
         },
     );
     assert_ne!(ack(&mut stream, 4).active_workspace, workspace_id);

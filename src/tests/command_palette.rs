@@ -445,7 +445,7 @@ fn command_mode_can_switch_from_navigation_and_create_a_workspace_here() {
     press(&mut rt, Key::Enter);
     let sent = commands(&outgoing);
     assert_eq!(sent.len(), 1);
-    assert!(matches!(&sent[0].1, Command::CreateWorkspace { name } if name.is_empty()));
+    assert!(matches!(&sent[0].1, Command::CreateWorkspace { name, .. } if name.is_empty()));
 }
 
 #[test]

@@ -30,6 +30,7 @@ fn osc_reports_publish_hidden_catalog_to_all_clients_and_survive_detachment() {
         1,
         CoreCommand::CreateWorkspace {
             name: "Elsewhere".into(),
+            accent: Default::default(),
         },
     );
     let elsewhere = ack(&mut first, 1);

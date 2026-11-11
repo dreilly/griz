@@ -1,6 +1,8 @@
 //! GUI-owned preferences. Session/catalog state deliberately does not live here.
 use std::collections::BTreeMap;
 
+use griz_protocol::WorkspaceAccent;
+
 use rune::{Chord, ChordKey, ChordMod, Key, KeyEvent, KeyPlatform, Tx, prefs::Prefs};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -45,50 +47,6 @@ impl Theme {
         match self {
             Self::Dark => "Dark",
             Self::Midnight => "Midnight",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WorkspaceButtonStyle {
-    #[default]
-    Soft,
-    Outline,
-    Solid,
-    Ghost,
-    Pill,
-    Accent,
-}
-
-impl WorkspaceButtonStyle {
-    pub const ALL: [Self; 6] = [
-        Self::Soft,
-        Self::Outline,
-        Self::Solid,
-        Self::Ghost,
-        Self::Pill,
-        Self::Accent,
-    ];
-
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::Soft => "soft",
-            Self::Outline => "outline",
-            Self::Solid => "solid",
-            Self::Ghost => "ghost",
-            Self::Pill => "pill",
-            Self::Accent => "accent",
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Soft => "Soft",
-            Self::Outline => "Outline",
-            Self::Solid => "Solid",
-            Self::Ghost => "Ghost",
-            Self::Pill => "Pill",
-            Self::Accent => "Accent",
         }
     }
 }
@@ -193,7 +151,7 @@ pub struct Settings {
     pub font: Font,
     pub font_size: f32,
     pub theme: Theme,
-    pub workspace_button_style: WorkspaceButtonStyle,
+    pub default_workspace_accent: WorkspaceAccent,
     /// Missing means the default; an empty string explicitly disables a shortcut.
     bindings: BTreeMap<String, String>,
 }
@@ -204,7 +162,7 @@ impl Default for Settings {
             font: Font::default(),
             font_size: 14.0,
             theme: Theme::default(),
-            workspace_button_style: WorkspaceButtonStyle::default(),
+            default_workspace_accent: WorkspaceAccent::Green,
             bindings: BTreeMap::new(),
         }
     }
@@ -273,15 +231,10 @@ impl Settings {
                 invalid = true;
             }
         }
-        if let Some(value) = values.get("workspace_button_style") {
-            if let Some(style) = value.as_str().and_then(|id| {
-                WorkspaceButtonStyle::ALL
-                    .into_iter()
-                    .find(|style| style.id() == id)
-            }) {
-                settings.workspace_button_style = style;
-            } else {
-                invalid = true;
+        if let Some(value) = values.get("default_workspace_accent") {
+            match serde_json::from_value::<WorkspaceAccent>(value.clone()) {
+                Ok(accent) => settings.default_workspace_accent = accent,
+                Err(_) => invalid = true,
             }
         }
         if let Some(value) = values.get("keybindings") {
@@ -325,9 +278,11 @@ impl Settings {
         value.insert("font".into(), self.font.name().into());
         value.insert("font_size".into(), self.font_size.into());
         value.insert("theme".into(), self.theme.name().into());
+        // The style picker has been retired; all workspace buttons are Soft.
+        value.remove("workspace_button_style");
         value.insert(
-            "workspace_button_style".into(),
-            self.workspace_button_style.id().into(),
+            "default_workspace_accent".into(),
+            serde_json::to_value(self.default_workspace_accent).unwrap(),
         );
         value.insert(
             "keybindings".into(),

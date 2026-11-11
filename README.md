@@ -258,14 +258,14 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   the app, including Settings and text fields (**⌘=** also increases size).
   Themes change the interface
   and terminal base background; applications' explicit ANSI colors are preserved.
-- **Buttons:** regular action buttons throughout the app use **Soft**: a subtle
-  neutral fill and border, rounded corners, and consistent hover, press, and keyboard
-  focus states. The same theme-relative styling applies in Dark and Midnight; selected
-  settings and workspace/tab navigation retain their selection highlights. You can
-  preview the empty-state workspace button in Soft, Outline, Solid,
-  Ghost, Pill, or Accent styles. Click a sample to select and save it without creating
-  a workspace. Soft is the neutral default; only Accent uses the green tint.
-  Samples include the real hover/press/focus behavior and match the actual button.
+  **Default workspace accent** starts at green; choose blue, purple, pink, orange,
+  green, or graphite for workspaces created from this GUI. Existing workspaces keep
+  their own colors, which can still be changed from their context menu. The default
+  is saved locally with the other appearance preferences; the chosen color becomes
+  shared workspace state when a workspace is created.
+  Regular action buttons use a fixed **Soft** style with a subtle neutral fill,
+  rounded corners, and consistent hover, press, and keyboard focus states. There
+  is no button-style picker; older style preferences are ignored.
 - **Shortcuts:** search actions, click a binding, then press a new combination.
   Conflicts are rejected; **Clear** disables a binding and **Reset** restores its
   default. Escape cancels recording before dismissing Settings. Shortcuts require

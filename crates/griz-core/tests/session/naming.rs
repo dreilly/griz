@@ -40,7 +40,10 @@ fn unnamed_workspace_uses_live_shell_directory_and_starts_its_terminal_there() {
     command(
         &mut stream,
         2,
-        CoreCommand::CreateWorkspace { name: "   ".into() },
+        CoreCommand::CreateWorkspace {
+            name: "   ".into(),
+            accent: Default::default(),
+        },
     );
     let created = ack(&mut stream, 2);
     let cwd = cwd.canonicalize().unwrap();
@@ -74,6 +77,7 @@ fn blank_rename_uses_the_target_workspaces_directory_not_the_active_workspace() 
         1,
         CoreCommand::CreateWorkspace {
             name: "  Custom name  ".into(),
+            accent: Default::default(),
         },
     );
     let created = ack(&mut stream, 1);
@@ -141,7 +145,10 @@ fn unnamed_workspace_falls_back_to_default_directory_without_a_selected_terminal
     command(
         &mut stream,
         2,
-        CoreCommand::CreateWorkspace { name: "".into() },
+        CoreCommand::CreateWorkspace {
+            name: "".into(),
+            accent: Default::default(),
+        },
     );
     let created = ack(&mut stream, 2);
     assert_eq!(created.workspaces.len(), 1);

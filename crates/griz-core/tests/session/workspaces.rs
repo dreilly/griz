@@ -29,6 +29,7 @@ fn check_workspace_close(close_final_tab: bool) {
         2,
         CoreCommand::CreateWorkspace {
             name: "Project".into(),
+            accent: Default::default(),
         },
     );
     let created = ack(&mut first, 2);
@@ -91,6 +92,7 @@ fn closing_final_tab_in_inactive_workspace_preserves_requester_and_switches_view
         1,
         CoreCommand::CreateWorkspace {
             name: "Other".into(),
+            accent: Default::default(),
         },
     );
     let created = ack(&mut first, 1);
@@ -164,6 +166,7 @@ fn close_last_workspace_allows_empty_attach_and_recreation_for_all_clients() {
         2,
         CoreCommand::CreateWorkspace {
             name: "Fresh".into(),
+            accent: Default::default(),
         },
     );
     let fresh = ack(&mut first, 2);
@@ -216,6 +219,7 @@ fn close_inactive_workspace_ends_all_its_shells_and_foreground_jobs_only() {
         1,
         CoreCommand::CreateWorkspace {
             name: "Disposable".into(),
+            accent: Default::default(),
         },
     );
     let created = ack(&mut stream, 1);

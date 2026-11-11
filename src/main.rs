@@ -619,7 +619,10 @@ impl State {
         }
         let value = self.draft.text.trim().to_owned();
         let command = match self.dialog.clone() {
-            Some(Dialog::NewWorkspace) => Command::CreateWorkspace { name: value },
+            Some(Dialog::NewWorkspace) => Command::CreateWorkspace {
+                name: value,
+                accent: self.settings.default_workspace_accent,
+            },
             Some(Dialog::RenameWorkspace(workspace_id)) => Command::RenameWorkspace {
                 workspace_id,
                 name: value,
@@ -839,10 +842,6 @@ fn main() {
     let spec: AppSpec<State> = AppSpec {
         scenes: &[
             ("settings", |s| s.settings_open = true),
-            ("buttons", |s| {
-                s.settings_open = true;
-                s.settings_page = settings_ui::Page::Buttons;
-            }),
             ("shortcuts", |s| {
                 s.settings_open = true;
                 s.settings_page = settings_ui::Page::Shortcuts;
