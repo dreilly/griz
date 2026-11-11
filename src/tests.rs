@@ -1,3 +1,5 @@
+#[path = "tests/agent_locations.rs"]
+mod agent_locations;
 #[path = "tests/agents.rs"]
 mod agents;
 #[path = "tests/buttons.rs"]

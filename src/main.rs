@@ -4,6 +4,7 @@ mod client;
 mod command_palette;
 mod harness_icons;
 mod input;
+mod launch;
 mod navigation_preview;
 mod panes;
 mod settings;
@@ -852,6 +853,12 @@ fn main() {
         on_key: Some(on_key),
         ..AppSpec::new("Griz", (1100.0, 720.0), State::default, view)
     };
+    // Embedded so development launches have the same Dock/app-switcher identity.
+    if let Err(error) =
+        rune::set_app_icon(include_bytes!("../assets/app-icon/terminal-gremlin.png").to_vec())
+    {
+        eprintln!("griz: could not load app icon: {error}");
+    }
     let app = App::new(spec)
         .init(move || initial)
         .args(rune_args)

@@ -48,6 +48,65 @@ GRIZ_SOCKET="$preview_dir/core.sock" ./target/debug/griz
 GRIZ_SOCKET="$preview_dir/core.sock" ./target/debug/griz-core --stop
 ```
 
+## Sharing an early test build (Apple Silicon)
+
+Build a self-contained macOS app and tester zip with:
+
+```sh
+./scripts/package-macos.sh
+```
+
+Requires an Apple Silicon Mac, the same Rust/Xcode/Rune build setup as development,
+and Python 3. The script builds **both** release executables for
+`aarch64-apple-darwin`, checks for non-system runtime libraries, bundles the app
+icon, records version/commit/build information, and includes dependency notices
+and locked third-party sources. Output goes to ignored `artifacts/releases/`:
+
+- `Griz-<version>-<commit>[-dirty]-macos-arm64.zip`
+- A matching `.zip.sha256` checksum file.
+
+The zip contains `Griz.app`, `BUILD-INFO.txt`, and a short tester guide. It needs
+no Rust, Xcode, Ghostty installation, or sibling Rune checkout on the tester's
+Mac. Send the zip/checksum directly or attach them to a manual GitHub prerelease.
+There is no update server or automatic update mechanism.
+
+By default, the bundle is **ad-hoc signed, not notarized**. This verifies bundle
+integrity locally but does not make it trusted by Gatekeeper. Private testers may
+need **System Settings → Privacy & Security → Open Anyway**. Do not ask them to
+disable Gatekeeper globally. If you have a Developer ID certificate and a saved
+`notarytool` keychain profile, the same packager can sign and notarize:
+
+```sh
+./scripts/package-macos.sh \
+  --sign-identity 'Developer ID Application: Your Name (TEAMID)' \
+  --notary-profile griz-notary
+```
+
+Signing happens inside-out, followed by signature verification. With a notary
+profile, the script submits the app, staples and validates the ticket, checks
+Gatekeeper acceptance, and only then creates the final zip. Apple credentials
+are not stored in the repository. These signing/notarization steps require your
+own credentials; the default ad-hoc path does not use Apple's notary service.
+
+The default deployment target is macOS 13.0; override with
+`MACOSX_DEPLOYMENT_TARGET` if needed. This is a build target, **not a tested OS
+compatibility matrix**. Smoke-test the extracted app on the tester's macOS version.
+Both Griz and Rune revisions/dirty states are recorded; prefer committed, clean
+checkouts for reproducible tester builds. Source distributions include the locked
+Cargo sources and license materials; review third-party obligations when changing
+dependencies or widening distribution.
+
+Finder/bundled launches start a new core in the **login account's home directory**
+and use its configured shell, independent of Finder's current directory or missing
+`SHELL`. Terminal sessions run interactive login shells so login PATH setup is
+available before prompt plugins run. Direct development launches still inherit cwd and `$SHELL`. Existing
+cores/sessions are not restarted or moved. Building/packaging never stops a core.
+
+**Manual updates require saving work, quitting all GUIs, and stopping the old
+core before replacing the app.** This ends all its sessions; a new GUI must not
+attach to a mismatched old core. See [the tester guide](docs/EARLY-TESTING.md) for
+installation, updating, feedback, diagnostics, and removal instructions.
+
 ## Workspaces and terminals
 
 **Workspace → tabs → terminal panes.** Each tab starts with one terminal and can
@@ -174,6 +233,13 @@ records, including when it is already selected. Other panes' notifications
 remain unread. Background status updates alone do not acknowledge notifications.
 Acknowledgements sync across windows and cannot dismiss a newer revision or a
 replacement shell's result.
+
+Each card's location uses **its own terminal pane's current directory**, not the
+workspace's selection-dependent automatic name. Switching tabs, split focus, or
+workspaces does not change other agents' locations. Custom workspace names remain
+as additional context, and hovering shows the pane's full (home-abbreviated) path.
+Child records share their owning pane's location; live directory changes update
+only cards belonging to that pane.
 
 The core consumes reports even when a pane is hidden or every GUI is closed.
 Reopening shows the current records and unacknowledged results. Updates are
@@ -358,9 +424,15 @@ shortcuts never restarts running shells.
 ## Session lifetime and configuration
 
 The GUI attaches to an existing core or starts the `griz-core` executable beside it
-in a detached process session. The first service launch uses the current directory
-and `$SHELL` (falling back to `/bin/sh`). Each shell runs interactively and reads
-its normal startup configuration. `GRIZ_SESSION` contains its terminal ID.
+in a detached process session. Direct development launches use the current directory
+and `$SHELL` (falling back to `/bin/sh`). The bundled `.app` starts a new core in the
+login account's home directory with its configured shell. Each shell runs as an
+**interactive login shell** (`-l -i`), so login configuration runs before prompt
+configuration. For zsh this includes `.zprofile` before `.zshrc`; for bash it
+includes the normal login profile (`.bash_profile`, `.bash_login`, or `.profile`).
+This lets Homebrew and other PATH setup work from Finder, without hard-coded
+package-manager paths. Bash users who keep interactive settings in `.bashrc`
+should source it from their login profile, as with other login-shell terminals. `GRIZ_SESSION` contains its terminal ID.
 
 **Quitting the GUI only detaches.** Reopening returns to the same workspaces and
 shells, including their variables, directories, running jobs, and terminal state.

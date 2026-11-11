@@ -26,6 +26,8 @@ mod naming;
 mod previews;
 #[path = "session/scrollback.rs"]
 mod scrollback;
+#[path = "session/shell_startup.rs"]
+mod shell_startup;
 #[path = "session/splits.rs"]
 mod splits;
 #[path = "session/workspaces.rs"]
@@ -41,6 +43,10 @@ struct Service {
 
 impl Service {
     fn start() -> Self {
+        Self::start_with("/bin/sh", |_, _| {})
+    }
+
+    fn start_with(shell: &str, configure: impl FnOnce(&std::path::Path, &mut Command)) -> Self {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -52,15 +58,16 @@ impl Service {
         ));
         fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
         let path = dir.join("core.sock");
-        let process = Command::new(env!("CARGO_BIN_EXE_griz-core"))
-            .args(["--shell", "/bin/sh", "--cwd", dir.to_str().unwrap()])
+        let mut command = Command::new(env!("CARGO_BIN_EXE_griz-core"));
+        command
+            .args(["--shell", shell, "--cwd", dir.to_str().unwrap()])
             .env("GRIZ_SOCKET", &path)
             .env("PS1", "griz$ ")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::inherit());
+        configure(&dir, &mut command);
+        let process = command.spawn().unwrap();
         let mut service = Self { process, dir, path };
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {

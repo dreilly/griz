@@ -32,7 +32,10 @@ impl Session {
             .openpty(size(cols, rows))
             .map_err(io::Error::other)?;
         let mut command = CommandBuilder::new(shell);
-        command.arg("-i");
+        // GUI launches inherit launchd's minimal PATH, not a terminal's shell
+        // environment. Login startup (e.g. zsh's .zprofile) must run before the
+        // interactive rc file so Homebrew/tools are available to prompt hooks.
+        command.args(["-l", "-i"]);
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");

@@ -163,6 +163,27 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
             let revision = record.revision;
             let label = record_label(record);
             let harness = Harness::from_app(&record.app);
+            // Automatic workspace names follow the client's selected pane.
+            // A card must instead describe the terminal that owns this record.
+            let directory = display_text(&terminal.directory);
+            let directory_name = std::path::Path::new(&directory)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(if directory.is_empty() {
+                    "Unknown directory"
+                } else {
+                    &directory
+                });
+            let terminal_label = display_text(&terminal.label);
+            let location = match workspace
+                .custom_name
+                .as_deref()
+                .map(display_text)
+                .filter(|name| !name.is_empty())
+            {
+                Some(name) => format!("{name} · {directory_name} · {terminal_label}"),
+                None => format!("{directory_name} · {terminal_label}"),
+            };
             let message = display_text(&record.message);
             let detail = match (message.is_empty(), record.progress) {
                 (true, None) => String::new(),
@@ -189,9 +210,8 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
                 .key(key.clone())
                 .role("button")
                 .label(format!(
-                    "{label} · {} · {} · {}{}",
+                    "{label} · {} · {location} · {}{}",
                     harness.name(),
-                    workspace.name,
                     status_label(status),
                     if agent.unread {
                         " · new notification"
@@ -200,8 +220,7 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
                     }
                 ))
                 .help(format!(
-                    "{label} · {} · {} · {kind} · {detail}",
-                    terminal.label, terminal.directory
+                    "{label} · {location} · {directory} · {kind} · {detail}"
                 ))
                 .focusable(true)
                 .disabled(!state.ready())
@@ -245,7 +264,8 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
                         ),
                 )
                 .child(
-                    text(format!("{} · {}", workspace.name, terminal.label))
+                    text(location)
+                        .key(format!("{key}-location"))
                         .font(p.label)
                         .color(p.muted)
                         .truncate(),

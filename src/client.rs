@@ -9,7 +9,7 @@ use std::net::Shutdown;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -150,7 +150,8 @@ fn connect_or_start(stop: &AtomicBool) -> io::Result<UnixStream> {
             ) => {}
         Err(e) => return Err(e),
     }
-    let core = std::env::current_exe()?.with_file_name("griz-core");
+    let executable = std::env::current_exe()?;
+    let core = executable.with_file_name("griz-core");
     if !core.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -179,7 +180,7 @@ fn connect_or_start(stop: &AtomicBool) -> io::Result<UnixStream> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(parent.join("core.log"))?;
-    let mut command = Command::new(core);
+    let mut command = crate::launch::core_command(&executable)?;
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
