@@ -14,17 +14,39 @@ pub enum Page {
     Shortcuts,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PrefixRecording {
+    Prefix,
+    Binding(Action),
+}
+
 pub fn record_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
-    let Some(action) = state.recording else {
+    if state.recording.is_none() && state.prefix_recording.is_none() {
         return false;
-    };
+    }
     if tx.key_repeat() {
         return true;
     }
     if event.key == Key::Escape {
         state.recording = None;
+        state.prefix_recording = None;
         state.settings_error = None;
-    } else {
+    } else if let Some(target) = state.prefix_recording {
+        let result = match target {
+            PrefixRecording::Prefix => {
+                settings::record(event, tx).and_then(|c| state.settings.set_prefix(Some(c)))
+            }
+            PrefixRecording::Binding(action) => settings::record_suffix(event, tx)
+                .and_then(|c| state.settings.bind_prefix(action, Some(c))),
+        };
+        match result {
+            Ok(()) => {
+                state.prefix_recording = None;
+                state.settings_changed();
+            }
+            Err(error) => state.settings_error = Some(error),
+        }
+    } else if let Some(action) = state.recording {
         match settings::record(event, tx) {
             Ok(chord) => state.bind_shortcut(action, Some(chord)),
             Err(error) => state.settings_error = Some(error),
@@ -433,6 +455,115 @@ fn appearance(state: &State, p: &Palette) -> El {
         )
 }
 
+fn binding_controls(state: &State, action: Action, prefix: bool, p: &Palette) -> El {
+    let kind = if prefix { "prefix" } else { "shortcut" };
+    let recording = if prefix {
+        state.prefix_recording == Some(PrefixRecording::Binding(action))
+    } else {
+        state.recording == Some(action)
+    };
+    col()
+        .gap(4.0)
+        .child(
+            text(if prefix { "After prefix" } else { "Shortcut" })
+                .font(p.label)
+                .color(p.muted),
+        )
+        .child(
+            row()
+                .flex_wrap()
+                .gap(6.0)
+                .child(
+                    button(
+                        format!("{kind}-record-{}", action.id()),
+                        &if recording {
+                            "Press key…".into()
+                        } else if prefix {
+                            state.settings.prefix_label(action)
+                        } else {
+                            state.settings.label(action)
+                        },
+                        p,
+                    )
+                    .min_w(104.0)
+                    .fill(if recording {
+                        p.accent.alpha(0.18)
+                    } else {
+                        p.button_fill()
+                    })
+                    .on_press_tx(move |s: &mut State, tx| {
+                        s.recording = if prefix { None } else { Some(action) };
+                        s.prefix_recording = prefix.then_some(PrefixRecording::Binding(action));
+                        s.settings_error = None;
+                        tx.blur();
+                    }),
+                )
+                .child(
+                    button(format!("{kind}-clear-{}", action.id()), "Clear", p).on_press(
+                        move |s: &mut State| {
+                            if prefix {
+                                match s.settings.bind_prefix(action, None) {
+                                    Ok(()) => {
+                                        s.recording = None;
+                                        s.prefix_recording = None;
+                                        s.settings_changed();
+                                    }
+                                    Err(error) => s.settings_error = Some(error),
+                                }
+                            } else {
+                                s.bind_shortcut(action, None);
+                            }
+                        },
+                    ),
+                )
+                .child(
+                    button(format!("{kind}-reset-{}", action.id()), "Reset", p).on_press(
+                        move |s: &mut State| {
+                            let result = if prefix {
+                                s.settings.reset_prefix_binding(action)
+                            } else {
+                                s.settings.reset_binding(action)
+                            };
+                            match result {
+                                Ok(()) => {
+                                    s.recording = None;
+                                    s.prefix_recording = None;
+                                    s.settings_changed();
+                                }
+                                Err(error) => s.settings_error = Some(error),
+                            }
+                        },
+                    ),
+                ),
+        )
+}
+
+fn prefix_setting(state: &State, p: &Palette) -> El {
+    let recording = state.prefix_recording == Some(PrefixRecording::Prefix);
+    row().w_full().flex_wrap().gap(10.0).center_y().py(10.0)
+        .child(setting_label("Prefix key", "Press and release the prefix, then an action key. Escape cancels; press the prefix twice to send it to the terminal.", p))
+        .child(row().flex_wrap().gap(6.0)
+            .child(button("prefix-key-record", &if recording { "Press prefix…".into() } else {
+                state.settings.prefix().map(|c| c.label()).unwrap_or_else(|| "Disabled".into())
+            }, p).on_press_tx(|s: &mut State, tx| {
+                s.recording = None;
+                s.prefix_recording = Some(PrefixRecording::Prefix);
+                s.settings_error = None;
+                tx.blur();
+            }))
+            .child(button("prefix-key-clear", "Clear", p).on_press(|s: &mut State| {
+                s.settings.set_prefix(None).unwrap();
+                s.prefix_recording = None;
+                s.settings_changed();
+            }))
+            .child(button("prefix-key-reset", "Reset", p).on_press(|s: &mut State| {
+                match s.settings.set_prefix(Some(rune::Chord::parse("ctrl+b").unwrap())) {
+                    Ok(()) => { s.prefix_recording = None; s.settings_changed(); }
+                    Err(error) => s.settings_error = Some(error),
+                }
+            })))
+}
+
 fn shortcuts(state: &State, p: &Palette) -> El {
     let mut list = col().w_full();
     let search = state.shortcut_search.text.to_lowercase();
@@ -442,7 +573,6 @@ fn shortcuts(state: &State, p: &Palette) -> El {
             continue;
         }
         count += 1;
-        let recording = state.recording == Some(action);
         list = list.child(
             row()
                 .w_full()
@@ -459,48 +589,8 @@ fn shortcuts(state: &State, p: &Palette) -> El {
                         .min_w(160.0)
                         .wrap(),
                 )
-                .child(
-                    row()
-                        .flex_wrap()
-                        .gap(6.0)
-                        .child(
-                            button(
-                                format!("shortcut-record-{}", action.id()),
-                                &if recording {
-                                    "Press shortcut…".into()
-                                } else {
-                                    state.settings.label(action)
-                                },
-                                p,
-                            )
-                            .min_w(104.0)
-                            .fill(if recording {
-                                p.accent.alpha(0.18)
-                            } else {
-                                p.button_fill()
-                            })
-                            .on_press_tx(move |s: &mut State, tx| {
-                                s.recording = Some(action);
-                                s.settings_error = None;
-                                tx.blur();
-                            }),
-                        )
-                        .child(
-                            button(format!("shortcut-clear-{}", action.id()), "Clear", p)
-                                .on_press(move |s: &mut State| s.bind_shortcut(action, None)),
-                        )
-                        .child(
-                            button(format!("shortcut-reset-{}", action.id()), "Reset", p).on_press(
-                                move |s: &mut State| match s.settings.reset_binding(action) {
-                                    Ok(()) => {
-                                        s.recording = None;
-                                        s.settings_changed();
-                                    }
-                                    Err(error) => s.settings_error = Some(error),
-                                },
-                            ),
-                        ),
-                ),
+                .child(binding_controls(state, action, false, p))
+                .child(binding_controls(state, action, true, p)),
         );
     }
     if count == 0 {
@@ -511,9 +601,10 @@ fn shortcuts(state: &State, p: &Palette) -> El {
         .gap(14.0)
         .child(heading(
             "Keyboard shortcuts",
-            "Click a shortcut to record a new combination. Press Escape to cancel.",
+            "Keep your shortcuts, or use a two-step prefix binding alongside them. Click either binding to record it; Escape cancels.",
             p,
         ))
+        .child(prefix_setting(state, p))
         .child(
             text_input(&state.shortcut_search, p.input)
                 .key("settings-shortcut-search")
@@ -526,7 +617,7 @@ fn shortcuts(state: &State, p: &Palette) -> El {
                 .border(1.0, p.line)
                 .color(p.ink)
                 .placeholder("Search actions…", p.muted)
-                .disabled(state.recording.is_some())
+                .disabled(state.recording.is_some() || state.prefix_recording.is_some())
                 .on_edit(|s: &mut State| &mut s.shortcut_search),
         )
         .child(list)
@@ -676,13 +767,15 @@ pub fn panel(state: &State, p: &Palette) -> Option<El> {
                     .role("dialog")
                     .label("Settings")
                     .modal(true, |s: &mut State| {
-                        if s.recording.take().is_none() {
+                        let recording =
+                            s.recording.take().is_some() | s.prefix_recording.take().is_some();
+                        if !recording {
                             s.settings_open = false;
                         }
                     })
                     .modal_click_outside(false)
                     .on_key(|s: &mut State, event, tx| {
-                        if s.recording.is_some() {
+                        if s.recording.is_some() || s.prefix_recording.is_some() {
                             record_key(s, event, tx)
                         } else if event.key == Key::Escape {
                             s.close_settings(tx);

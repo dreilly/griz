@@ -102,6 +102,7 @@ pub(crate) fn open(state: &mut State, action: Action, tx: &mut Tx) {
         return;
     }
     crate::terminal_mouse::cancel(state);
+    state.prefix_waiting = false;
     let mode = if action == Action::QuickOpen {
         Mode::Navigate
     } else {

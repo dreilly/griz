@@ -7,7 +7,9 @@ use griz_protocol::{PaneLayout, SplitDirection, TerminalId};
 use rune::{Cursor, El, Icon, col, el, icon, row, text};
 
 mod interaction;
+mod navigation;
 pub use interaction::{Interaction, gesture_key, reconcile};
+pub(crate) use navigation::neighbor;
 
 static GRIP_ICON: Icon = Icon {
     name: "griz-pane-grip",

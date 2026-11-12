@@ -20,6 +20,8 @@ mod navigation_previews;
 mod pane_interaction;
 #[path = "tests/pane_zoom.rs"]
 mod pane_zoom;
+#[path = "tests/prefix_bindings.rs"]
+mod prefix_bindings;
 #[path = "tests/settings.rs"]
 mod settings_tests;
 #[path = "tests/splits.rs"]

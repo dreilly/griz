@@ -234,7 +234,7 @@ fn shortcut_recording_conflicts_clear_reset_and_search() {
     click(&mut rt, "shortcut-reset-sidebar.toggle");
     assert_eq!(
         rt.state.settings.chord(Action::ToggleSidebar),
-        Some(Action::ToggleSidebar.default_chord())
+        Action::ToggleSidebar.default_chord()
     );
     click(&mut rt, "settings-shortcut-search");
     rt.key(Key::Text("sidebar".into()).into());
@@ -323,7 +323,7 @@ fn preferences_round_trip_with_disabled_bindings_and_missing_defaults() {
     assert!(loaded.chord(Action::NewTerminal).is_none());
     assert_eq!(
         loaded.chord(Action::NextTab),
-        Some(Action::NextTab.default_chord())
+        Action::NextTab.default_chord()
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -382,7 +382,7 @@ fn conflicts_and_reserved_or_unmodified_shortcuts_do_not_mutate_the_model() {
         );
         assert_eq!(
             settings.chord(Action::ToggleSidebar),
-            Some(Action::ToggleSidebar.default_chord())
+            Action::ToggleSidebar.default_chord()
         );
     }
     settings

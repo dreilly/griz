@@ -24,7 +24,7 @@ fn search_and_workspace_controls_replace_the_old_buttons_and_leave_a_collapsed_r
     }
     assert_eq!(
         shortcut(&rt),
-        Some(Action::QuickOpen.default_chord().label())
+        Some(Action::QuickOpen.default_chord().unwrap().label())
     );
     assert!(size(&rt, "quick-open")[0] > 400.0);
     let [width, height] = size(&rt, "toggle-sidebar");

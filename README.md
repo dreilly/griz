@@ -362,6 +362,17 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   Font sizing, closing the active terminal, and opening either palette are app-wide
   commands; other shortcuts only run with terminal focus. Closing is suppressed
   while a modal is open.
+- **Prefix bindings:** a second, independently editable binding sits alongside each
+  shortcut. The **Prefix key** row defaults to **Ctrl+B**; press and release it,
+  then press the action key. The status bar shows when Griz is waiting. Defaults:
+  **p / n** select the previous/next workspace, **1–9** select a workspace by its
+  sidebar position, **< / >** select the previous/next tab, **" / %** split
+  horizontally/vertically, **h / j / k / l** focus the pane left/down/up/right,
+  and **z** toggles pane zoom. Directional focus does not wrap at the edge.
+  Prefix sequences only run with terminal focus, not in Settings, dialogs, or
+  palettes. **Escape** or an unknown key cancels without typing into the shell;
+  press the prefix twice to send the prefix itself through to a nested TUI.
+  Clear/Reset work independently for each binding and for the prefix key.
 - Defaults: **⌘T** opens a terminal using the service default directory,
   **⌘W** closes the **active terminal** (confirming only for a workspace's final
   terminal), **⇧⌘N** opens New Workspace,

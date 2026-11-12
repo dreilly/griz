@@ -56,6 +56,9 @@ struct State {
     settings_open: bool,
     settings_page: settings_ui::Page,
     recording: Option<Action>,
+    prefix_recording: Option<settings_ui::PrefixRecording>,
+    prefix_waiting: bool,
+    prefix_consumed: bool,
     settings_error: Option<String>,
     shortcut_search: TextEdit,
     palette: command_palette::PaletteState,
@@ -90,6 +93,9 @@ impl Default for State {
             settings_open: false,
             settings_page: settings_ui::Page::Appearance,
             recording: None,
+            prefix_recording: None,
+            prefix_waiting: false,
+            prefix_consumed: false,
             settings_error: None,
             shortcut_search: TextEdit::new(""),
             palette: command_palette::PaletteState::default(),
@@ -110,6 +116,8 @@ impl State {
         self.dialog = None;
         self.preedit.clear();
         self.recording = None;
+        self.prefix_recording = None;
+        self.prefix_waiting = false;
         self.settings_open = true;
         tx.blur();
     }
@@ -117,10 +125,12 @@ impl State {
     fn close_settings(&mut self, tx: &mut Tx) {
         self.settings_open = false;
         self.recording = None;
+        self.prefix_recording = None;
         tx.blur();
     }
 
     fn settings_changed(&mut self) {
+        self.prefix_waiting = false;
         self.settings_error = self.settings.save(&mut self.prefs).err();
         let sizes = self.pane_sizes.clone();
         for (id, (width, height)) in sizes {
@@ -140,6 +150,7 @@ impl State {
         match self.settings.bind(action, chord) {
             Ok(()) => {
                 self.recording = None;
+                self.prefix_recording = None;
                 self.settings_changed();
             }
             Err(error) => self.settings_error = Some(error),
@@ -208,6 +219,37 @@ impl State {
                     self.change(Command::SelectTerminal {
                         terminal_id: ids[next],
                     });
+                }
+            }
+            Action::FocusPaneLeft
+            | Action::FocusPaneRight
+            | Action::FocusPaneUp
+            | Action::FocusPaneDown => {
+                if let Some(terminal_id) = panes::neighbor(self, action) {
+                    self.change(Command::SelectTerminal { terminal_id });
+                }
+            }
+            Action::NextWorkspace | Action::PreviousWorkspace | Action::SwitchWorkspace(_) => {
+                if let Some(snapshot) = &self.snapshot {
+                    let len = snapshot.workspaces.len();
+                    if len > 0 {
+                        let current = snapshot
+                            .workspaces
+                            .iter()
+                            .position(|w| w.id == snapshot.active_workspace)
+                            .unwrap_or(0);
+                        let next = match action {
+                            Action::NextWorkspace => (current + 1) % len,
+                            Action::PreviousWorkspace => (current + len - 1) % len,
+                            Action::SwitchWorkspace(n) => usize::from(n.saturating_sub(1)),
+                            _ => unreachable!(),
+                        };
+                        if let Some(workspace) = snapshot.workspaces.get(next) {
+                            self.change(Command::SelectWorkspace {
+                                workspace_id: workspace.id,
+                            });
+                        }
+                    }
                 }
             }
             Action::NextTab | Action::PreviousTab => {
@@ -460,6 +502,7 @@ impl State {
     }
 
     fn change(&mut self, command: Command) {
+        self.prefix_waiting = false;
         if !self.ready() {
             return;
         }
@@ -691,6 +734,7 @@ impl State {
             Dialog::CloseTerminal(..) | Dialog::CloseWorkspace(..) | Dialog::WorkspaceMenu(..)
         );
         self.preedit.clear();
+        self.prefix_waiting = false;
         self.dialog = Some(dialog);
         tx.blur();
     }
@@ -750,6 +794,7 @@ fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
         if matches!(state.dialog, Some(Dialog::WorkspaceMenu(..))) {
             state.dialog = None;
         }
+        state.prefix_waiting = false;
         state.online = false;
         state.pending = None;
         state.preedit.clear();
@@ -771,7 +816,7 @@ fn terminal_focus(state: &State, tx: &Tx) -> bool {
 }
 
 fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
-    if state.recording.is_some() {
+    if state.recording.is_some() || state.prefix_recording.is_some() {
         return settings_ui::record_key(state, event, tx);
     }
     if rune::Chord::parse("mod+comma")
@@ -780,6 +825,61 @@ fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     {
         if !tx.key_repeat() {
             state.open_settings(tx);
+        }
+        return true;
+    }
+    if !tx.key_repeat() {
+        state.prefix_consumed = false;
+    } else if state.prefix_consumed {
+        return true;
+    }
+    if state.settings_open
+        || state.dialog.is_some()
+        || state.palette.is_open()
+        || !terminal_focus(state, tx)
+    {
+        state.prefix_waiting = false;
+    } else if state.prefix_waiting {
+        // Repeats never complete a sequence or leak its suffix into the shell.
+        if tx.key_repeat() {
+            return true;
+        }
+        state.prefix_waiting = false;
+        state.prefix_consumed = true;
+        if event.key == rune::Key::Escape {
+            return true;
+        }
+        if state
+            .settings
+            .prefix()
+            .is_some_and(|c| c.matches_tx(event, tx))
+        {
+            // Press the prefix twice to pass it through to a nested TUI or shell.
+            if let Some(bytes) = input::encode(event, false) {
+                state.input(bytes);
+            }
+        } else if let Some(action) = Action::ALL.into_iter().find(|action| {
+            state
+                .settings
+                .prefix_chord(*action)
+                .is_some_and(|c| c.matches_tx(event, tx))
+        }) {
+            state.act(action, tx);
+        }
+        // Unknown suffixes cancel the sequence without typing either key.
+        return true;
+    } else if terminal_focus(state, tx)
+        && !state.settings_open
+        && state.dialog.is_none()
+        && !state.palette.is_open()
+        && state
+            .settings
+            .prefix()
+            .is_some_and(|c| c.matches_tx(event, tx))
+    {
+        if !tx.key_repeat() {
+            state.prefix_waiting = true;
+            state.preedit.clear();
         }
         return true;
     }
@@ -870,6 +970,10 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
 }
 
 fn on_ime(state: &mut State, event: &Ime, tx: &mut Tx) -> bool {
+    if state.prefix_waiting {
+        state.preedit.clear();
+        return true;
+    }
     if state.settings_open
         || state.dialog.is_some()
         || state.palette.is_open()

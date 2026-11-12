@@ -433,7 +433,9 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     .center_y()
                     .border_sides([1.0, 0.0, 0.0, 0.0], p.line)
                     .child(
-                        text(
+                        text(if state.prefix_waiting {
+                            "Prefix: waiting for a key… · Escape to cancel"
+                        } else {
                             state
                                 .notice
                                 .as_deref()
@@ -441,8 +443,8 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                                     "Updating selection…"
                                 } else {
                                     &state.status
-                                }),
-                        )
+                                })
+                        })
                         .font(p.label)
                         .color(if state.notice.is_some() {
                             p.accent
@@ -465,6 +467,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 && !s.palette.is_open()
                 && crate::terminal_focus(s, tx)
             {
+                s.prefix_waiting = false;
                 let bracketed = s.screen().is_some_and(|screen| screen.bracketed_paste);
                 s.input(crate::input::paste(text, bracketed));
             }
