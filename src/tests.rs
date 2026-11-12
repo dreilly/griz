@@ -28,6 +28,8 @@ mod splits;
 mod terminal_graphics;
 #[path = "tests/terminal_mouse.rs"]
 mod terminal_mouse_tests;
+#[path = "tests/terminal_whites.rs"]
+mod terminal_whites;
 #[path = "tests/workspace_accents.rs"]
 mod workspace_accents;
 #[path = "tests/workspace_labels.rs"]

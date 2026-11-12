@@ -20,6 +20,22 @@ pub fn color([r, g, b]: [u8; 3]) -> Color {
     }
 }
 
+/// Soften only bright neutral foregrounds, including explicit ANSI/truecolor whites.
+/// Keep dim grays, chromatic colors, and all backgrounds unchanged. Compress rather
+/// than clamp highlights to retain tonal variation in the bright gray ramp.
+pub fn foreground_for(settings: &Settings, [r, g, b]: [u8; 3]) -> Color {
+    const KNEE: u8 = 160;
+    if r == g && g == b && r > KNEE {
+        let white = u16::from(settings.terminal_whites.white_point());
+        let knee = u16::from(KNEE);
+        let range = u16::from(255 - KNEE);
+        let value = knee + (u16::from(r - KNEE) * (white - knee) + range / 2) / range;
+        color([value as u8; 3])
+    } else {
+        color([r, g, b])
+    }
+}
+
 pub fn background_for(theme: Theme) -> Color {
     color(match theme {
         Theme::Dark => [24, 26, 29],
@@ -117,7 +133,7 @@ pub fn viewport(state: &State, id: Option<TerminalId>, split: bool) -> El {
         viewport = viewport.child(
             text(state.status.clone())
                 .font(state.settings.ui_font(TextStyle::new(14.0, 400.0)))
-                .color(Color::WHITE)
+                .color(foreground_for(&state.settings, [255; 3]))
                 .absolute(PAD, PAD),
         );
     }
@@ -148,7 +164,7 @@ pub fn viewport(state: &State, id: Option<TerminalId>, split: bool) -> El {
         viewport = viewport.child(
             text(state.preedit.clone())
                 .font(font(&state.settings, cell_height, false, false))
-                .color(Color::WHITE)
+                .color(foreground_for(&state.settings, [255; 3]))
                 .fill(color([40, 40, 40]))
                 .absolute(
                     PAD + f32::from(x) * cell_width,
@@ -234,16 +250,15 @@ fn screen_grid(
                 continue;
             }
             let width = f32::from(cell.width) * cell_width;
-            if let Some(mut graphic) =
-                graphics::cell(&cell.text, width, cell_height, color(cell.fg))
-            {
+            let foreground = foreground_for(settings, cell.fg);
+            if let Some(mut graphic) = graphics::cell(&cell.text, width, cell_height, foreground) {
                 if cell.underline {
                     // Graphics bypass text shaping, so retain their underline explicitly.
                     let thickness = (settings.font_size / 14.0).min(cell_height);
                     graphic = graphic.child(
                         el().key("terminal-graphic-underline")
                             .size(width, thickness)
-                            .fill(color(cell.fg))
+                            .fill(foreground)
                             .absolute(0.0, cell_height - thickness),
                     );
                 }
@@ -256,13 +271,11 @@ fn screen_grid(
             }
             let mut glyph = text(cell.text.clone())
                 .font(font(settings, cell_height, cell.bold, cell.italic))
-                .color(color(cell.fg))
+                .color(foreground)
                 .size(f32::from(cell.width) * cell_width, cell_height)
                 .absolute(x as f32 * cell_width, y as f32 * cell_height);
             if cell.underline {
-                glyph = glyph.spans(vec![
-                    Span::new(0, cell.text.len()).underline(color(cell.fg)),
-                ]);
+                glyph = glyph.spans(vec![Span::new(0, cell.text.len()).underline(foreground)]);
             }
             grid = grid.child(glyph);
         }

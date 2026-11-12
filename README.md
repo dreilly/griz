@@ -339,8 +339,12 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   preserving the UI's type hierarchy. Changes apply immediately, including terminal
   cell geometry and PTY dimensions. **⌘+ / ⌘−** increase/decrease size anywhere in
   the app, including Settings and text fields (**⌘=** also increases size).
-  Themes change the interface
-  and terminal base background; applications' explicit ANSI colors are preserved.
+  Themes change the interface and terminal base background. **Terminal whites**
+  defaults to **Soft** (`#D8D8D8` white); choose **Softer** (`#C8C8C8`) or **Original**
+  (unmodified colors). Soft modes compress bright grayscale foregrounds, including
+  explicit ANSI/RGB whites from applications, while preserving dim grays (up to
+  `#A0A0A0`), chromatic colors, and all backgrounds. The local, live adjustment also
+  applies to terminal previews; it never changes terminal data or copied text.
   **Default workspace accent** starts at green; choose blue, purple, pink, orange,
   green, or graphite for workspaces created from this GUI. Existing workspaces keep
   their own colors, which can still be changed from their context menu. The default

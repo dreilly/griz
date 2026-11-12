@@ -51,6 +51,35 @@ impl Theme {
     }
 }
 
+/// GUI-only highlight compression; the service's terminal colors stay authoritative.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TerminalWhites {
+    Original,
+    #[default]
+    Soft,
+    Softer,
+}
+
+impl TerminalWhites {
+    pub const ALL: [Self; 3] = [Self::Original, Self::Soft, Self::Softer];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Original => "Original",
+            Self::Soft => "Soft",
+            Self::Softer => "Softer",
+        }
+    }
+
+    pub fn white_point(self) -> u8 {
+        match self {
+            Self::Original => 255,
+            Self::Soft => 216,
+            Self::Softer => 200,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     NewTerminal,
@@ -156,6 +185,7 @@ pub struct Settings {
     pub font: Font,
     pub font_size: f32,
     pub theme: Theme,
+    pub terminal_whites: TerminalWhites,
     pub default_workspace_accent: WorkspaceAccent,
     /// Missing means the default; an empty string explicitly disables a shortcut.
     bindings: BTreeMap<String, String>,
@@ -167,6 +197,7 @@ impl Default for Settings {
             font: Font::default(),
             font_size: 14.0,
             theme: Theme::default(),
+            terminal_whites: TerminalWhites::default(),
             default_workspace_accent: WorkspaceAccent::Green,
             bindings: BTreeMap::new(),
         }
@@ -236,6 +267,17 @@ impl Settings {
                 invalid = true;
             }
         }
+        if let Some(value) = values.get("terminal_whites") {
+            if let Some(whites) = value.as_str().and_then(|name| {
+                TerminalWhites::ALL
+                    .into_iter()
+                    .find(|whites| whites.name() == name)
+            }) {
+                settings.terminal_whites = whites;
+            } else {
+                invalid = true;
+            }
+        }
         if let Some(value) = values.get("default_workspace_accent") {
             match serde_json::from_value::<WorkspaceAccent>(value.clone()) {
                 Ok(accent) => settings.default_workspace_accent = accent,
@@ -283,6 +325,7 @@ impl Settings {
         value.insert("font".into(), self.font.name().into());
         value.insert("font_size".into(), self.font_size.into());
         value.insert("theme".into(), self.theme.name().into());
+        value.insert("terminal_whites".into(), self.terminal_whites.name().into());
         // The style picker has been retired; all workspace buttons are Soft.
         value.remove("workspace_button_style");
         value.insert(

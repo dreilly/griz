@@ -1,5 +1,5 @@
 use super::*;
-use crate::settings::{Action, Font, Settings, Theme};
+use crate::settings::{Action, Font, Settings, TerminalWhites, Theme};
 use griz_protocol::WorkspaceAccent;
 use rune::{Chord, Key, Mods, prefs::Prefs};
 
@@ -77,6 +77,11 @@ fn appearance_is_live_reflows_the_pty_and_can_be_reset() {
         terminal.fill,
         terminal_view::background_for(Theme::Midnight)
     );
+    rt.update(|_, tx| {
+        tx.scroll_into_view("settings-appearance-reset");
+        tx.instant();
+    });
+    rt.frame(0.0);
     click(&mut rt, "settings-appearance-reset");
     assert_eq!(rt.state.settings.font_size, 14.0);
     assert_eq!(rt.state.settings.font, Font::Menlo);
@@ -297,6 +302,7 @@ fn preferences_round_trip_with_disabled_bindings_and_missing_defaults() {
     settings.font = Font::Monaco;
     settings.font_size = 19.0;
     settings.theme = Theme::Midnight;
+    settings.terminal_whites = TerminalWhites::Softer;
     settings.default_workspace_accent = WorkspaceAccent::Purple;
     settings
         .bind(Action::ToggleSidebar, Some(Chord::parse("mod+j").unwrap()))
@@ -308,6 +314,7 @@ fn preferences_round_trip_with_disabled_bindings_and_missing_defaults() {
     assert_eq!(loaded.font, Font::Monaco);
     assert_eq!(loaded.font_size, 19.0);
     assert_eq!(loaded.theme, Theme::Midnight);
+    assert_eq!(loaded.terminal_whites, TerminalWhites::Softer);
     assert_eq!(loaded.default_workspace_accent, WorkspaceAccent::Purple);
     assert_eq!(
         loaded.chord(Action::ToggleSidebar),
@@ -434,6 +441,9 @@ fn appearance_controls_fit_small_windows_and_large_fonts_without_horizontal_over
             "settings-accent-orange",
             "settings-accent-green",
             "settings-accent-graphite",
+            "settings-whites-Original",
+            "settings-whites-Soft",
+            "settings-whites-Softer",
             "settings-font-0",
             "settings-font-1",
             "settings-font-2",

@@ -1,7 +1,7 @@
 //! Settings presentation; the typed model and persistence stay in settings.rs.
 use crate::{
     State,
-    settings::{self, Action, Font, Settings, Theme},
+    settings::{self, Action, Font, Settings, TerminalWhites, Theme},
     ui::{Palette, button},
 };
 use griz_protocol::WorkspaceAccent;
@@ -186,6 +186,50 @@ fn workspace_accent(state: &State, p: &Palette) -> El {
         )
 }
 
+fn terminal_whites(state: &State, p: &Palette) -> El {
+    let mut choices = row()
+        .key("settings-terminal-whites")
+        .flex_wrap()
+        .gap(6.0)
+        .role("radiogroup")
+        .label("Terminal whites")
+        .focus_group();
+    for whites in TerminalWhites::ALL {
+        let selected = state.settings.terminal_whites == whites;
+        choices = choices.child(
+            button(
+                format!("settings-whites-{}", whites.name()),
+                whites.name(),
+                p,
+            )
+            .role("radio")
+            .checked(selected)
+            .focus_selected(selected)
+            .fill(if selected {
+                p.ink.alpha(0.12)
+            } else {
+                Color::TRANSPARENT
+            })
+            .border(1.0, if selected { p.accent } else { p.line })
+            .on_press(move |s: &mut State| {
+                s.settings.terminal_whites = whites;
+                s.settings_changed();
+            }),
+        );
+    }
+    row()
+        .w_full()
+        .center_y()
+        .flex_wrap()
+        .gap(14.0)
+        .child(setting_label(
+            "Terminal whites",
+            "Soften bright grayscale text. Dim text, colors, and backgrounds stay unchanged.",
+            p,
+        ))
+        .child(choices)
+}
+
 fn appearance(state: &State, p: &Palette) -> El {
     let mut fonts = row()
         .min_w(0.0)
@@ -247,6 +291,7 @@ fn appearance(state: &State, p: &Palette) -> El {
                 .child(themes),
         )
         .child(workspace_accent(state, p))
+        .child(terminal_whites(state, p))
         .child(divider(p))
         .child(
             col()
@@ -345,8 +390,22 @@ fn appearance(state: &State, p: &Palette) -> El {
                         )
                         .child(
                             text("griz ~/workspace > echo hello")
+                                .key("settings-preview-white")
                                 .font(terminal_font)
-                                .color(p.ink)
+                                .color(crate::terminal_view::foreground_for(
+                                    &state.settings,
+                                    [255; 3],
+                                ))
+                                .wrap(),
+                        )
+                        .child(
+                            text("Dim text stays readable")
+                                .key("settings-preview-dim")
+                                .font(terminal_font)
+                                .color(crate::terminal_view::foreground_for(
+                                    &state.settings,
+                                    [144; 3],
+                                ))
                                 .wrap(),
                         )
                         .child(text("hello, world").font(terminal_font).color(
@@ -366,6 +425,7 @@ fn appearance(state: &State, p: &Palette) -> El {
                         s.settings.font = defaults.font;
                         s.settings.font_size = defaults.font_size;
                         s.settings.theme = defaults.theme;
+                        s.settings.terminal_whites = defaults.terminal_whites;
                         s.settings.default_workspace_accent = defaults.default_workspace_accent;
                         s.settings_changed();
                     }),
