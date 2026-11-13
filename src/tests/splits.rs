@@ -107,13 +107,12 @@ fn clicking_a_pane_gates_typing_until_ack_then_routes_only_to_that_shell() {
     let sent = commands(&outgoing);
     assert!(
         sent.iter()
-            .any(|(_, c)| matches!(c, Command::Input { terminal_id: 2, data } if data == b"hello"))
+            .any(|(_, command)| key_text(command, 2, "hello"))
     );
-    assert!(
-        !sent
-            .iter()
-            .any(|(_, c)| matches!(c, Command::Input { terminal_id: 1, .. }))
-    );
+    assert!(!sent.iter().any(|(_, command)| matches!(
+        command,
+        Command::Key { terminal_id: 1, .. } | Command::Input { terminal_id: 1, .. }
+    )));
     click(&mut rt, "close-pane-1");
     assert!(rt.state.dialog.is_none());
     assert!(
@@ -153,7 +152,7 @@ fn pane_split_controls_and_shortcuts_are_addressed_and_do_not_type_into_shell() 
             direction: SplitDirection::Vertical
         }
     )));
-    assert!(!sent.iter().any(|(_, c)| matches!(c, Command::Input { .. })));
+    assert!(!sent.iter().any(|(_, command)| terminal_input(command)));
 }
 
 #[test]

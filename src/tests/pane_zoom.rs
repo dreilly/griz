@@ -75,7 +75,7 @@ fn zoom_shortcut_is_rebindable_and_never_reaches_the_shell() {
     assert!(
         !commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { .. }))
+            .any(|(_, command)| terminal_input(command))
     );
     rt.update(|s, _| {
         s.bind_shortcut(
@@ -110,7 +110,7 @@ fn zoom_shortcut_is_rebindable_and_never_reaches_the_shell() {
     assert!(
         !commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { .. }))
+            .any(|(_, command)| terminal_input(command))
     );
 }
 
@@ -169,7 +169,7 @@ fn clicking_zoom_on_an_inactive_pane_selects_it_before_input_can_resume() {
     assert!(
         !commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { .. }))
+            .any(|(_, command)| terminal_input(command))
     );
 }
 
@@ -295,7 +295,7 @@ fn command_palette_can_toggle_pane_zoom() {
     assert!(
         !commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { .. }))
+            .any(|(_, command)| terminal_input(command))
     );
 }
 

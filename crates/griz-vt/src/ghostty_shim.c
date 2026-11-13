@@ -54,6 +54,8 @@ struct GrizVt {
     GhosttyRenderStateRowCells row_cells;
     GhosttyMouseEncoder mouse_encoder;
     GhosttyMouseEvent mouse_event;
+    GhosttyKeyEncoder key_encoder;
+    GhosttyKeyEvent key_event;
     bool mouse_configured;
     uint16_t mouse_modes;
     uint16_t mouse_cols;
@@ -167,6 +169,8 @@ static void griz_vt_free_partial(struct GrizVt* vt) {
         return;
     }
     free(vt->responses);
+    ghostty_key_event_free(vt->key_event);
+    ghostty_key_encoder_free(vt->key_encoder);
     ghostty_mouse_event_free(vt->mouse_event);
     ghostty_mouse_encoder_free(vt->mouse_encoder);
     ghostty_render_state_row_cells_free(vt->row_cells);
@@ -230,6 +234,16 @@ int griz_vt_new(
         return result;
     }
     result = ghostty_mouse_event_new(NULL, &vt->mouse_event);
+    if (result != GHOSTTY_SUCCESS) {
+        griz_vt_free_partial(vt);
+        return result;
+    }
+    result = ghostty_key_encoder_new(NULL, &vt->key_encoder);
+    if (result != GHOSTTY_SUCCESS) {
+        griz_vt_free_partial(vt);
+        return result;
+    }
+    result = ghostty_key_event_new(NULL, &vt->key_event);
     if (result != GHOSTTY_SUCCESS) {
         griz_vt_free_partial(vt);
         return result;
@@ -536,6 +550,165 @@ int griz_vt_mouse_input(
     }
     *out_data = data;
     *out_len = written;
+    return GHOSTTY_SUCCESS;
+}
+
+// This bundled API exposes a setter but no getter for modifyOtherKeys state 2.
+// Compare Ghostty's own encoding of one probe with that option disabled, rather
+// than tracking escape sequences ourselves. The next real key resets both the
+// encoder from the terminal and every event field; this probe is never sent.
+static int griz_key_modify_other_active(struct GrizVt* vt, uint8_t* out) {
+    *out = 0;
+    GhosttyResult result = ghostty_key_encoder_set_from_terminal(
+        vt->key_encoder,
+        vt->terminal
+    );
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_key_event_set_action(vt->key_event, GHOSTTY_KEY_ACTION_PRESS);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_key_event_set_key(vt->key_event, GHOSTTY_KEY_A);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_key_event_set_mods(vt->key_event, GHOSTTY_MODS_CTRL);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_key_event_set_consumed_mods(vt->key_event, 0);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_key_event_set_composing(vt->key_event, false);
+    if (result != GHOSTTY_SUCCESS) return result;
+    static const uint8_t text[] = "a";
+    result = ghostty_key_event_set_utf8(
+        vt->key_event,
+        (GhosttyString){.ptr = text, .len = 1}
+    );
+    if (result != GHOSTTY_SUCCESS) return result;
+
+    uint8_t live[64];
+    size_t live_len = 0;
+    result = ghostty_key_encoder_encode(
+        vt->key_encoder, vt->key_event, live, sizeof(live), &live_len);
+    if (result != GHOSTTY_SUCCESS) return result;
+
+    bool disabled = false;
+    result = ghostty_key_encoder_set(
+        vt->key_encoder,
+        GHOSTTY_KEY_ENCODER_OPT_MODIFY_OTHER_KEYS_STATE_2,
+        &disabled
+    );
+    if (result != GHOSTTY_SUCCESS) return result;
+    uint8_t legacy[64];
+    size_t legacy_len = 0;
+    result = ghostty_key_encoder_encode(
+        vt->key_encoder, vt->key_event, legacy, sizeof(legacy), &legacy_len);
+    if (result != GHOSTTY_SUCCESS) return result;
+
+    *out = live_len != legacy_len || memcmp(live, legacy, live_len) != 0;
+    return GHOSTTY_SUCCESS;
+}
+
+int griz_vt_key_input(
+    struct GrizVt* vt,
+    uint8_t action,
+    uint16_t key,
+    const uint8_t* text,
+    size_t text_len,
+    uint8_t shift,
+    uint8_t alt,
+    uint8_t ctrl,
+    uint8_t super_key,
+    uint8_t** out_data,
+    size_t* out_len,
+    uint8_t* out_kitty_flags,
+    uint8_t* out_modify_other_keys
+) {
+    if (vt == NULL || out_data == NULL || out_len == NULL || out_kitty_flags == NULL ||
+        out_modify_other_keys == NULL || (text_len != 0 && text == NULL)) {
+        return GHOSTTY_INVALID_VALUE;
+    }
+    *out_data = NULL;
+    *out_len = 0;
+    *out_kitty_flags = 0;
+    *out_modify_other_keys = 0;
+
+    GhosttyKeyAction ghostty_action;
+    switch (action) {
+    case 0: ghostty_action = GHOSTTY_KEY_ACTION_PRESS; break;
+    case 1: ghostty_action = GHOSTTY_KEY_ACTION_REPEAT; break;
+    default: return GHOSTTY_INVALID_VALUE;
+    }
+
+    // Keyboard modes can change without a rendered Screen publication. The encoder is owned
+    // beside this terminal and is synchronized immediately before every encoding operation.
+    GhosttyResult result = ghostty_key_encoder_set_from_terminal(
+        vt->key_encoder,
+        vt->terminal
+    );
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_terminal_get(
+        vt->terminal,
+        GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS,
+        out_kitty_flags
+    );
+    if (result != GHOSTTY_SUCCESS) return result;
+
+    result = ghostty_key_event_set_action(vt->key_event, ghostty_action);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_key_event_set_key(vt->key_event, (GhosttyKey)key);
+    if (result != GHOSTTY_SUCCESS) return result;
+
+    GhosttyMods mods = 0;
+    if (shift) mods |= GHOSTTY_MODS_SHIFT;
+    if (alt) mods |= GHOSTTY_MODS_ALT;
+    if (ctrl) mods |= GHOSTTY_MODS_CTRL;
+    if (super_key) mods |= GHOSTTY_MODS_SUPER;
+    result = ghostty_key_event_set_mods(vt->key_event, mods);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_key_event_set_consumed_mods(vt->key_event, 0);
+    if (result != GHOSTTY_SUCCESS) return result;
+    result = ghostty_key_event_set_composing(vt->key_event, false);
+    if (result != GHOSTTY_SUCCESS) return result;
+    GhosttyString utf8 = {.ptr = text, .len = text_len};
+    result = ghostty_key_event_set_utf8(vt->key_event, utf8);
+    if (result != GHOSTTY_SUCCESS) return result;
+
+    size_t needed = 0;
+    result = ghostty_key_encoder_encode(
+        vt->key_encoder,
+        vt->key_event,
+        NULL,
+        0,
+        &needed
+    );
+    if (result == GHOSTTY_SUCCESS && needed == 0) return GHOSTTY_SUCCESS;
+    if (result != GHOSTTY_OUT_OF_SPACE || needed == 0 || needed > 4096) {
+        return result == GHOSTTY_OUT_OF_SPACE && needed > 4096
+            ? GHOSTTY_INVALID_VALUE
+            : result;
+    }
+
+    uint8_t* data = malloc(needed);
+    if (data == NULL) return GHOSTTY_OUT_OF_MEMORY;
+    size_t written = 0;
+    result = ghostty_key_encoder_encode(
+        vt->key_encoder,
+        vt->key_event,
+        data,
+        needed,
+        &written
+    );
+    if (result != GHOSTTY_SUCCESS || written != needed) {
+        free(data);
+        return result == GHOSTTY_SUCCESS ? GHOSTTY_INVALID_VALUE : result;
+    }
+    *out_data = data;
+    *out_len = written;
+    if (key == GHOSTTY_KEY_ENTER && shift && *out_kitty_flags == 0) {
+        result = griz_key_modify_other_active(vt, out_modify_other_keys);
+        if (result != GHOSTTY_SUCCESS) {
+            free(data);
+            *out_data = NULL;
+            *out_len = 0;
+            return result;
+        }
+    }
     return GHOSTTY_SUCCESS;
 }
 

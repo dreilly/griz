@@ -83,13 +83,13 @@ fn clicking_search_opens_focused_quick_open_without_typing_into_the_shell() {
     assert!(
         !commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { .. }))
+            .any(|(_, command)| terminal_input(command))
     );
     command_palette_tests::press(&mut rt, Key::Text("x".into()));
     assert!(
         commands(&outgoing)
             .iter()
-            .any(|(_, c)| { matches!(c, Command::Input { data, .. } if data == b"x") })
+            .any(|(_, command)| key_text(command, 1, "x"))
     );
 }
 

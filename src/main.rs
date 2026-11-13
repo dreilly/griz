@@ -15,7 +15,7 @@ mod ui;
 mod workspace_ui;
 
 use griz_protocol::{
-    Command, Event, Screen, SplitDirection, TabInfo, TerminalId, ViewState, WorkspaceId,
+    Command, Event, KeyInput, Screen, SplitDirection, TabInfo, TerminalId, ViewState, WorkspaceId,
     WorkspaceInfo,
 };
 use rune::{App, AppSpec, Ime, KeyEvent, TextEdit, Titlebar, Tx, Waker};
@@ -543,17 +543,20 @@ impl State {
         }
     }
 
-    /// Return whether input changed view-visible state (normally only an error).
-    /// Sending bytes alone needs no GUI rebuild; the echoed screen arrives via poll.
-    fn input(&mut self, bytes: Vec<u8>) -> bool {
-        // A click may race a previously queued screen. Never type into the old tab.
-        if self.settings_open
+    fn input_blocked(&self) -> bool {
+        self.settings_open
             || self.dialog.is_some()
             || self.paste_confirmation.is_some()
             || self.palette.is_open()
             || self.pending.is_some()
             || self.offline
-        {
+    }
+
+    /// Return whether input changed view-visible state (normally only an error).
+    /// Sending input alone needs no GUI rebuild; the echoed screen arrives via poll.
+    fn raw_input(&mut self, bytes: Vec<u8>) -> bool {
+        // A click may race a previously queued screen. Never type into the old tab.
+        if self.input_blocked() {
             return false;
         }
         if !self.online {
@@ -577,6 +580,29 @@ impl State {
                 })
                 .is_none()
                 || had_selection;
+        }
+        false
+    }
+
+    fn key_input(&mut self, event: KeyInput) -> bool {
+        if self.input_blocked() {
+            return false;
+        }
+        if !self.online {
+            self.notice = Some("Not connected. Click Reconnect.".into());
+            return true;
+        }
+        if self.shell_exited() {
+            self.notice = Some("Shell has exited. Click Start new shell above.".into());
+            return true;
+        }
+        if event.validate().is_err() {
+            self.notice = Some("Key input rejected".into());
+            return true;
+        }
+        let had_selection = self.terminal_mouse.selection.take().is_some();
+        if let Some(terminal_id) = self.active_terminal() {
+            return self.send(Command::Key { terminal_id, event }).is_none() || had_selection;
         }
         false
     }
@@ -969,9 +995,10 @@ fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
             .prefix()
             .is_some_and(|c| c.matches_tx(event, tx))
         {
-            // Press the prefix twice to pass it through to a nested TUI or shell.
-            if let Some(bytes) = input::encode(event, false) {
-                state.input(bytes);
+            // Press the prefix twice to pass one native key event through to a nested TUI
+            // or shell. This is the only terminal pass; terminal_key returns immediately.
+            if let Some(event) = input::key(event, tx) {
+                state.key_input(event);
             }
         } else if let Some(action) = Action::ALL.into_iter().find(|action| {
             state
@@ -1075,9 +1102,8 @@ fn terminal_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
         tx.instant();
         return true;
     }
-    let application_cursor = state.screen().is_some_and(|s| s.application_cursor);
-    if let Some(bytes) = input::encode(event, application_cursor) {
-        if !state.input(bytes) {
+    if let Some(event) = input::key(event, tx) {
+        if !state.key_input(event) {
             tx.live_only();
         }
         true
@@ -1118,7 +1144,9 @@ fn on_ime(state: &mut State, event: &Ime, tx: &mut Tx) -> bool {
         Ime::Commit(text) => {
             let had_preedit = !state.preedit.is_empty();
             state.preedit.clear();
-            if !state.input(text.as_bytes().to_vec()) && !had_preedit {
+            // An IME commit has composed text but no reliable native press/physical/release
+            // event. Keep it as raw UTF-8 instead of fabricating a Kitty keyboard event.
+            if !state.raw_input(text.as_bytes().to_vec()) && !had_preedit {
                 tx.live_only();
             }
         }

@@ -19,7 +19,7 @@ fn sending_a_key_does_not_rebuild_an_unchanged_screen_but_echo_does() {
     );
     assert!(matches!(
         commands(&outgoing).as_slice(),
-        [(_, Command::Input { terminal_id: 1, .. })]
+        [(_, Command::Key { terminal_id: 1, .. })]
     ));
     let mut snapshot = rt.state.snapshot.clone().unwrap();
     snapshot.terminal.as_mut().unwrap().screen.cells[0][0].text = "x".into();

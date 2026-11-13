@@ -45,11 +45,8 @@ fn dividers_resize_both_axes_and_reflow_each_shell_immediately() {
             let grid = terminal_view::grid_for(w, h, &rt.state.settings);
             assert!(sent.iter().any(|(_, c)| matches!(c, Command::Resize { terminal_id, cols, rows } if *terminal_id == id && (*cols, *rows) == grid)));
         }
-        assert!(
-            !sent
-                .iter()
-                .any(|(_, c)| matches!(c, Command::Input { .. } | Command::SelectTerminal { .. }))
-        );
+        assert!(!sent.iter().any(|(_, command)| terminal_input(command)
+            || matches!(command, Command::SelectTerminal { .. })));
         // Output snapshots and zoom must not discard the window's proportions.
         rt.update(|s, _| s.apply(split_snapshot(direction)));
         settle(&mut rt);
@@ -88,7 +85,7 @@ fn resize_clamps_before_panes_collapse_and_escape_restores_original_sizes() {
     assert!(
         !commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { .. }))
+            .any(|(_, command)| terminal_input(command))
     );
 }
 
@@ -201,7 +198,8 @@ fn cancelled_outside_and_self_drops_do_not_change_layout_or_type() {
         assert!(
             !commands(&outgoing)
                 .iter()
-                .any(|(_, c)| matches!(c, Command::MovePane { .. } | Command::Input { .. })),
+                .any(|(_, command)| matches!(command, Command::MovePane { .. })
+                    || terminal_input(command)),
             "{destination}"
         );
         assert!(rt.find("pane-drop-preview-2").is_none());

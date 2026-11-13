@@ -42,7 +42,7 @@ fn settings_open_by_palette_or_command_comma_and_never_type_into_shell() {
     assert!(
         commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { data, .. } if data == b"x"))
+            .any(|(_, command)| key_text(command, 1, "x"))
     );
 }
 
@@ -267,7 +267,7 @@ fn custom_shortcuts_dispatch_actions_without_leaking_bytes() {
     assert!(
         !commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { .. }))
+            .any(|(_, command)| terminal_input(command))
     );
     // Let the expanded sidebar finish leaving before clicking its collapsed toggle.
     command_palette_tests::settle(&mut rt);

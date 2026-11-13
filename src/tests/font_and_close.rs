@@ -82,7 +82,7 @@ fn command_plus_equal_and_minus_work_in_settings_and_focused_fields_and_persist(
     assert!(
         !commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { .. }))
+            .any(|(_, command)| terminal_input(command))
     );
 }
 

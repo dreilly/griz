@@ -18,6 +18,8 @@ mod accents;
 mod agents;
 #[path = "session/input_latency.rs"]
 mod input_latency;
+#[path = "session/key.rs"]
+mod key;
 #[path = "session/mouse.rs"]
 mod mouse;
 #[path = "session/moves.rs"]

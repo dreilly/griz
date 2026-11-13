@@ -89,19 +89,36 @@ through Ghostty's host mode API (whose documented behavior does not invoke the
 callback) and synchronizing the shim boolean. Repeated begin sequences do not move
 the deadline; shell exit also ends a hold, and later holds can start normally.
 
-### 4. Use Ghostty's keyboard encoder
+### 4. Use Ghostty's keyboard encoder — addressed within Rune metadata limits
 
-**Confirmed:** `src/input.rs::encode` hand-encodes a limited subset;
-`src/main.rs::terminal_key` supplies only `Screen.application_cursor`. Negotiated
-Kitty keyboard flags, modifyOtherKeys, keypad/backarrow modes, release events,
-and some modified/function keys are not represented end to end.
+Ordinary native keys now cross GUI → core as bounded structured events: logical
+key, optional Rune `Tx::physical_key`, press/repeat action, modifiers, and generated
+UTF-8 text. Core requires the addressed terminal to be that client's selected live
+shell, then the terminal-owned Ghostty encoder calls
+`ghostty_key_encoder_set_from_terminal` immediately before every encoding. Cursor,
+keypad, DECBKM, alt-prefix, modifyOtherKeys, and Kitty flags therefore come from the
+live terminal rather than a stale `Screen` or a second escape-sequence parser.
+Rune's full logical named set and F1–F24 are represented; supported native physical
+codes include keypad and media keys.
 
-**Ghostty support:** `ghostty_key_encoder_set_from_terminal` and
-`ghostty_key_encoder_encode` (`key/encoder.h`).
+Griz keeps its historical Shift+Enter CSI-u sequence only while neither Kitty flags
+nor modifyOtherKeys is negotiated. Once either keyboard mode is active, Ghostty's
+result is authoritative, including Kitty repeat event types. Native Command/platform shortcuts remain outside terminal input,
+and macOS Option-generated Unicode remains text rather than gaining an artificial
+Meta escape prefix.
 
-**Suggested scope:** Preserve physical key, action, modifiers, and text over IPC;
-encode in core against live terminal state. Verify Rune's physical-key/release
-metadata before promising every negotiated mode.
+IME commits still use bounded raw UTF-8 `Input`. An IME commit has composed text but
+no trustworthy native key identity/action, so Griz does not fabricate a Kitty
+report-all/associated-text event for it. No additional keyboard capability callback
+is registered or advertised.
+
+**Remaining metadata limits:** Rune's logical `on_key` path reports presses and
+`Tx::key_repeat`, but not matching releases, so Griz sends press/repeat only and does
+not invent release events. Native dispatch usually supplies a physical code; scripted
+`Runtime::key` events and some platform keys do not, and remain logical-only. Rune's
+`Mods` also omits Caps Lock, Num Lock, modifier-side, consumed-modifier, and composing
+state, so those Ghostty event fields stay unset. Applications requesting Kitty release
+or modifier-only streams will not receive events Griz cannot observe.
 
 ### 5. Preserve logical lines when copying
 
@@ -270,8 +287,10 @@ history/image memory use are observable without expanding routine frame IPC.
 
 - Header/API availability and absence of the Griz integration paths were
   statically inspected. This is not proof of every application's observed behavior.
-- Keyboard metadata, extra mouse buttons, live graphics capability replies, and
-  actual history depth should be verified with focused runtime tests.
+- Keyboard press/repeat encoding is covered across live modes, but release,
+  modifier-only, lock-state, consumed-modifier, and always-present physical metadata
+  remain unavailable from Griz's Rune logical-key path. Extra mouse buttons, live
+  graphics capability replies, and actual history depth still need focused runtime tests.
 - Clipboard, focus, geometry, theme, and terminal-controlled resize all require
   policies for multiple clients observing the same terminal.
 - Standalone utilities (allocator control, WebAssembly, raw OSC/SGR parsers,

@@ -22,7 +22,7 @@ fn prefix(rt: &mut Runtime<State>) {
 }
 
 fn no_input(sent: &[(u64, Command)]) {
-    assert!(!sent.iter().any(|(_, c)| matches!(c, Command::Input { .. })));
+    assert!(!sent.iter().any(|(_, command)| terminal_input(command)));
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn prefix_waits_visibly_cancels_and_never_leaks_unknown_suffixes() {
     assert!(
         commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { data, .. } if data == b"x"))
+            .any(|(_, command)| key_text(command, 1, "x"))
     );
 }
 
@@ -63,14 +63,23 @@ fn pressing_prefix_twice_passes_one_control_byte_to_terminal() {
     let sent = commands(&outgoing);
     assert_eq!(
         sent.iter()
-            .filter(|(_, c)| matches!(c, Command::Input { .. }))
+            .filter(|(_, command)| terminal_input(command))
             .count(),
         1
     );
-    assert!(
-        sent.iter()
-            .any(|(_, c)| matches!(c, Command::Input { data, .. } if data == &[2]))
-    );
+    assert!(sent.iter().any(|(_, command)| matches!(
+        command,
+        Command::Key {
+            terminal_id: 1,
+            event: griz_protocol::KeyInput {
+                action: griz_protocol::KeyAction::Press,
+                key: griz_protocol::TerminalKey::Character,
+                text,
+                modifiers: griz_protocol::KeyModifiers { ctrl: true, .. },
+                ..
+            }
+        } if text == "b"
+    )));
 }
 
 #[test]
@@ -214,7 +223,7 @@ fn prefix_and_suffix_repeats_never_dispatch_twice_or_type() {
     assert!(
         commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { data, .. } if data == b"x"))
+            .any(|(_, command)| key_text(command, 1, "x"))
     );
 }
 

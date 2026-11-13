@@ -7,7 +7,8 @@ mod program_status_tests;
 mod scrollback_tests;
 
 use griz_protocol::{
-    Cell, MouseAction, MouseButton, MouseInput, ProgramStatusRecord, Screen, UnderlineStyle,
+    Cell, KeyAction, KeyInput, MouseAction, MouseButton, MouseInput, ProgramStatusRecord, Screen,
+    TerminalKey, UnderlineStyle,
 };
 use std::error;
 use std::ffi::{c_int, c_void};
@@ -97,6 +98,21 @@ unsafe extern "C" {
         ctrl: u8,
         data: *mut *mut u8,
         len: *mut usize,
+    ) -> c_int;
+    fn griz_vt_key_input(
+        vt: *mut GrizVt,
+        action: u8,
+        key: u16,
+        text: *const u8,
+        text_len: usize,
+        shift: u8,
+        alt: u8,
+        ctrl: u8,
+        super_key: u8,
+        data: *mut *mut u8,
+        len: *mut usize,
+        kitty_flags: *mut u8,
+        modify_other_keys: *mut u8,
     ) -> c_int;
     fn griz_vt_paste(
         vt: *mut GrizVt,
@@ -314,6 +330,62 @@ impl Terminal {
         };
         // SAFETY: the pointer was allocated by the shim and may be null.
         unsafe { griz_vt_bytes_free(data) };
+        Ok(bytes)
+    }
+
+    /// Encodes one native press/repeat using this terminal's live keyboard modes.
+    /// Rune's logical handler does not provide releases, so callers must not synthesize them.
+    pub fn key_input(&mut self, event: &KeyInput) -> Result<Vec<u8>, Error> {
+        event.validate().map_err(|_| Error {
+            operation: "validate key input",
+            code: INVALID_VALUE,
+        })?;
+        let key = event
+            .physical
+            .map_or_else(|| logical_key(event), |physical| physical.value());
+        let mut data = std::ptr::null_mut();
+        let mut len = 0;
+        let mut kitty_flags = 0;
+        let mut modify_other_keys = 0;
+        // SAFETY: the terminal handle is live; event text remains valid for this synchronous
+        // call; successful output is transferred to the caller-owned C allocation.
+        check("encode key input", unsafe {
+            griz_vt_key_input(
+                self.raw.as_ptr(),
+                match event.action {
+                    KeyAction::Press => 0,
+                    KeyAction::Repeat => 1,
+                },
+                key,
+                event.text.as_ptr(),
+                event.text.len(),
+                event.modifiers.shift.into(),
+                event.modifiers.alt.into(),
+                event.modifiers.ctrl.into(),
+                event.modifiers.super_key.into(),
+                &mut data,
+                &mut len,
+                &mut kitty_flags,
+                &mut modify_other_keys,
+            )
+        })?;
+        let bytes = copy_c_bytes(data, len);
+
+        // Ghostty owns every negotiated encoding and distinct keypad identity. Retain Griz's
+        // historical Shift+Enter CSI-u only for an unnegotiated main Return key.
+        if event.key == TerminalKey::Enter
+            && event.physical.is_none_or(|physical| physical.value() == 58)
+            && event.modifiers.shift
+            && kitty_flags == 0
+            && modify_other_keys == 0
+        {
+            let modifier = 1
+                + u8::from(event.modifiers.shift)
+                + 2 * u8::from(event.modifiers.alt)
+                + 4 * u8::from(event.modifiers.ctrl)
+                + 8 * u8::from(event.modifiers.super_key);
+            return Ok(format!("\x1b[13;{modifier}u").into_bytes());
+        }
         Ok(bytes)
     }
 
@@ -541,6 +613,67 @@ impl Drop for Snapshot {
     }
 }
 
+fn logical_key(event: &KeyInput) -> u16 {
+    match event.key {
+        TerminalKey::Character => character_key(&event.text),
+        TerminalKey::Enter => 58,
+        TerminalKey::Backspace => 53,
+        TerminalKey::Delete => 68,
+        TerminalKey::Left => 76,
+        TerminalKey::Right => 77,
+        TerminalKey::Up => 78,
+        TerminalKey::Down => 75,
+        TerminalKey::Home => 71,
+        TerminalKey::End => 69,
+        TerminalKey::PageUp => 74,
+        TerminalKey::PageDown => 73,
+        TerminalKey::Insert => 72,
+        TerminalKey::PrintScreen => 148,
+        TerminalKey::ScrollLock => 149,
+        TerminalKey::Pause => 150,
+        TerminalKey::Escape => 120,
+        TerminalKey::Tab => 64,
+        TerminalKey::Function { number } => 120 + u16::from(number),
+        TerminalKey::ContextMenu => 55,
+    }
+}
+
+fn character_key(text: &str) -> u16 {
+    let mut chars = text.chars();
+    let Some(character) = chars.next() else {
+        return 0;
+    };
+    if chars.next().is_some() {
+        return 0;
+    }
+    match character.to_ascii_lowercase() {
+        '`' | '~' => 1,
+        '\\' | '|' => 2,
+        '[' | '{' => 3,
+        ']' | '}' => 4,
+        ',' | '<' => 5,
+        '0' | ')' => 6,
+        '1' | '!' => 7,
+        '2' | '@' => 8,
+        '3' | '#' => 9,
+        '4' | '$' => 10,
+        '5' | '%' => 11,
+        '6' | '^' => 12,
+        '7' | '&' => 13,
+        '8' | '*' => 14,
+        '9' | '(' => 15,
+        '=' | '+' => 16,
+        'a'..='z' => 20 + (character.to_ascii_lowercase() as u16 - 'a' as u16),
+        '-' | '_' => 46,
+        '.' | '>' => 47,
+        '\'' | '"' => 48,
+        ';' | ':' => 49,
+        '/' | '?' => 50,
+        ' ' => 63,
+        _ => 0,
+    }
+}
+
 fn copy_c_bytes(data: *mut u8, len: usize) -> Vec<u8> {
     let bytes = if len == 0 {
         Vec::new()
@@ -564,6 +697,152 @@ fn check(operation: &'static str, code: c_int) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use griz_protocol::{KeyModifiers, PhysicalKey};
+
+    fn key(key: TerminalKey, text: &str, modifiers: KeyModifiers) -> KeyInput {
+        KeyInput {
+            action: KeyAction::Press,
+            key,
+            physical: None,
+            text: text.into(),
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn key_encoder_uses_live_modes_modifiers_functions_unicode_and_alt_text() {
+        let mut terminal = Terminal::new(80, 24).unwrap();
+        assert_eq!(
+            terminal
+                .key_input(&key(TerminalKey::Up, "", KeyModifiers::default()))
+                .unwrap(),
+            b"\x1b[A"
+        );
+        terminal.write(b"\x1b[?1h");
+        assert_eq!(
+            terminal
+                .key_input(&key(TerminalKey::Up, "", KeyModifiers::default()))
+                .unwrap(),
+            b"\x1bOA"
+        );
+        assert_eq!(
+            terminal
+                .key_input(&key(
+                    TerminalKey::Up,
+                    "",
+                    KeyModifiers {
+                        shift: true,
+                        ..KeyModifiers::default()
+                    },
+                ))
+                .unwrap(),
+            b"\x1b[1;2A"
+        );
+
+        assert_eq!(
+            terminal
+                .key_input(&key(
+                    TerminalKey::Function { number: 5 },
+                    "",
+                    KeyModifiers {
+                        ctrl: true,
+                        ..KeyModifiers::default()
+                    },
+                ))
+                .unwrap(),
+            b"\x1b[15;5~"
+        );
+        assert_eq!(
+            terminal
+                .key_input(&key(TerminalKey::Character, "界", KeyModifiers::default()))
+                .unwrap(),
+            "界".as_bytes()
+        );
+        assert_eq!(
+            terminal
+                .key_input(&key(
+                    TerminalKey::Character,
+                    "å",
+                    KeyModifiers {
+                        alt: true,
+                        ..KeyModifiers::default()
+                    },
+                ))
+                .unwrap(),
+            "å".as_bytes(),
+            "macOS Option-generated Unicode must not gain an ESC prefix"
+        );
+    }
+
+    #[test]
+    fn key_encoder_honors_backarrow_keypad_modify_other_keys_and_shift_enter_fallback() {
+        let mut terminal = Terminal::new(80, 24).unwrap();
+        assert_eq!(
+            terminal
+                .key_input(&key(TerminalKey::Backspace, "", KeyModifiers::default()))
+                .unwrap(),
+            [0x7f]
+        );
+        terminal.write(b"\x1b[?67h");
+        assert_eq!(
+            terminal
+                .key_input(&key(TerminalKey::Backspace, "", KeyModifiers::default()))
+                .unwrap(),
+            [0x08]
+        );
+
+        let mut keypad = key(TerminalKey::Character, "1", KeyModifiers::default());
+        keypad.physical = PhysicalKey::new(81);
+        assert_eq!(terminal.key_input(&keypad).unwrap(), b"1");
+
+        let shifted_enter = key(
+            TerminalKey::Enter,
+            "",
+            KeyModifiers {
+                shift: true,
+                ..KeyModifiers::default()
+            },
+        );
+        assert_eq!(terminal.key_input(&shifted_enter).unwrap(), b"\x1b[13;2u");
+        let mut keypad_enter = shifted_enter.clone();
+        keypad_enter.physical = PhysicalKey::new(97);
+        assert_ne!(terminal.key_input(&keypad_enter).unwrap(), b"\x1b[13;2u");
+
+        let ctrl_a = key(
+            TerminalKey::Character,
+            "a",
+            KeyModifiers {
+                ctrl: true,
+                ..KeyModifiers::default()
+            },
+        );
+        assert_eq!(terminal.key_input(&ctrl_a).unwrap(), [1]);
+        terminal.write(b"\x1b[>4;2m");
+        assert_ne!(terminal.key_input(&ctrl_a).unwrap(), [1]);
+        assert_eq!(
+            terminal.key_input(&shifted_enter).unwrap(),
+            b"\x1b[27;2;13~"
+        );
+
+        terminal.write(b"\x1b[>27u");
+        let mut negotiated_enter = shifted_enter;
+        negotiated_enter.action = KeyAction::Repeat;
+        let negotiated = terminal.key_input(&negotiated_enter).unwrap();
+        assert!(String::from_utf8(negotiated).unwrap().contains(":2"));
+    }
+
+    #[test]
+    fn kitty_keyboard_flags_encode_repeat_action() {
+        let mut terminal = Terminal::new(80, 24).unwrap();
+        terminal.write(b"\x1b[>27u");
+        let mut event = key(TerminalKey::Up, "", KeyModifiers::default());
+        event.physical = PhysicalKey::new(78);
+        let press = terminal.key_input(&event).unwrap();
+        event.action = KeyAction::Repeat;
+        let repeat = terminal.key_input(&event).unwrap();
+        assert_ne!(press, repeat);
+        assert!(String::from_utf8(repeat).unwrap().contains(":2"));
+    }
 
     #[test]
     fn ansi_styles_colors_cursor_and_crlf() {

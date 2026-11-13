@@ -383,6 +383,24 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   Closing targets the focused pane's captured terminal ID, not a tab or window.
   The Settings shortcut **⌘,** stays fixed so Settings is always reachable.
 
+### Terminal keyboard encoding
+
+Ordinary native keys are sent as structured events to the core and encoded by
+libghostty-vt against the selected shell's current modes. This covers DECCKM,
+DECBKM, application keypad identity where Rune supplies it, modifyOtherKeys, and
+negotiated Kitty keyboard flags without the GUI maintaining its own escape-sequence
+parser. Griz retains its Shift+Enter CSI-u compatibility in the unnegotiated mode;
+negotiated modes use Ghostty's encoding. Native Command shortcuts never become shell
+input, and macOS Option-composed characters remain Unicode text.
+
+Rune currently gives Griz logical key presses, an auto-repeat flag, and usually a
+physical code, but not logical key-release callbacks or lock/modifier-side/composition
+metadata. Griz therefore reports press and repeat only; it does not synthesize Kitty
+release or modifier-only streams. Scripted logical keys may lack a physical code.
+IME commits remain raw UTF-8 text because a composed result has no trustworthy native
+key event to attach; this avoids pretending to support associated native event streams
+that Rune did not provide.
+
 ### Terminal mouse and copying
 
 - Mouse wheel and trackpad scrolling browse the terminal's retained history in either
@@ -521,7 +539,7 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 ## Current limits
 
 - No tab reordering/renaming, pane dragging across tabs/windows, or remote transport yet.
-- No draggable scrollback scrollbar, images, hyperlinks, advanced terminal keyboard protocols,
+- No draggable scrollback scrollbar, images, hyperlinks, complete native keyboard event fidelity,
   or full font/glyph shaping. Selection covers the visible grid; copied multi-row text
   uses newlines between visual rows (soft-wrapped logical lines are not yet distinguished).
   Secondary clicks are reported as press/release pairs; right-button dragging is not yet exposed by Rune.

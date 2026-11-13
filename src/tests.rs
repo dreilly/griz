@@ -154,6 +154,24 @@ fn commands(outgoing: &Receiver<Request>) -> Vec<(u64, Command)> {
         .collect()
 }
 
+fn terminal_input(command: &Command) -> bool {
+    matches!(command, Command::Input { .. } | Command::Key { .. })
+}
+
+fn key_text(command: &Command, terminal_id: TerminalId, text: &str) -> bool {
+    matches!(
+        command,
+        Command::Key {
+            terminal_id: id,
+            event: griz_protocol::KeyInput {
+                key: griz_protocol::TerminalKey::Character,
+                text: typed,
+                ..
+            }
+        } if *id == terminal_id && typed == text
+    )
+}
+
 #[test]
 fn first_frame_has_workspaces_tabs_and_a_terminal_viewport() {
     let rt = runtime((1100.0, 720.0));
@@ -418,10 +436,92 @@ fn typing_works_after_terminal_or_non_selection_toolbar_clicks() {
         assert!(
             commands(&outgoing)
                 .iter()
-                .any(|(_, c)| matches!(c, Command::Input { terminal_id: 1, data } if data == b"x")),
+                .any(|(_, command)| key_text(command, 1, "x")),
             "typing after {target}"
         );
     }
+}
+
+#[test]
+fn native_command_shortcuts_never_leak_and_option_unicode_stays_structured_text() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1000.0, 680.0));
+    commands(&outgoing);
+
+    rt.key(KeyEvent {
+        key: rune::Key::Command('q'),
+        mods: rune::Mods {
+            cmd: true,
+            logo: true,
+            ..Default::default()
+        },
+    });
+    rt.frame(0.0);
+    assert!(
+        !commands(&outgoing)
+            .iter()
+            .any(|(_, command)| terminal_input(command))
+    );
+
+    rt.key(KeyEvent {
+        key: rune::Key::Text("å".into()),
+        mods: rune::Mods {
+            alt: true,
+            ..Default::default()
+        },
+    });
+    rt.frame(0.0);
+    assert!(matches!(
+        commands(&outgoing).as_slice(),
+        [(_, Command::Key {
+            terminal_id: 1,
+            event: griz_protocol::KeyInput {
+                key: griz_protocol::TerminalKey::Character,
+                text,
+                modifiers: griz_protocol::KeyModifiers { alt: true, .. },
+                ..
+            }
+        })] if text == "å"
+    ));
+}
+
+#[test]
+fn repeat_and_ime_use_distinct_structured_and_raw_paths_with_pending_gates() {
+    let (mut state, outgoing) = mock();
+    state.pending = Some(99);
+    let mut rt = make_runtime(state, (1000.0, 680.0));
+    commands(&outgoing);
+    rt.repeat_key(rune::Key::Up.into());
+    rt.frame(0.0);
+    rt.update(|state, tx| {
+        on_ime(state, &Ime::Commit("家".into()), tx);
+    });
+    assert!(commands(&outgoing).is_empty());
+
+    rt.update(|state, _| state.pending = None);
+    rt.repeat_key(rune::Key::Up.into());
+    rt.frame(0.0);
+    assert!(matches!(
+        commands(&outgoing).as_slice(),
+        [(
+            _,
+            Command::Key {
+                event: griz_protocol::KeyInput {
+                    action: griz_protocol::KeyAction::Repeat,
+                    key: griz_protocol::TerminalKey::Up,
+                    ..
+                },
+                ..
+            }
+        )]
+    ));
+    rt.update(|state, tx| {
+        on_ime(state, &Ime::Commit("家".into()), tx);
+    });
+    assert!(matches!(
+        commands(&outgoing).as_slice(),
+        [(_, Command::Input { data, .. })] if data == "家".as_bytes()
+    ));
 }
 
 #[test]
@@ -431,7 +531,7 @@ fn shift_enter_reaches_the_terminal_without_submitting_as_enter() {
     click(&mut rt, "terminal");
     commands(&outgoing);
 
-    for (shift, expected) in [(true, b"\x1b[13;2u".as_slice()), (false, b"\r".as_slice())] {
+    for shift in [true, false] {
         rt.key(KeyEvent {
             key: rune::Key::Enter,
             mods: rune::Mods {
@@ -443,9 +543,16 @@ fn shift_enter_reaches_the_terminal_without_submitting_as_enter() {
         assert!(
             matches!(
                 commands(&outgoing).as_slice(),
-                [(_, Command::Input { terminal_id: 1, data })] if data == expected
+                [(_, Command::Key {
+                    terminal_id: 1,
+                    event: griz_protocol::KeyInput {
+                        key: griz_protocol::TerminalKey::Enter,
+                        modifiers: griz_protocol::KeyModifiers { shift: actual, .. },
+                        ..
+                    }
+                })] if *actual == shift
             ),
-            "incorrect terminal input with shift={shift}"
+            "incorrect terminal key event with shift={shift}"
         );
     }
 }
@@ -487,7 +594,7 @@ fn switching_tabs_waits_for_ack_and_routes_input_to_the_new_id() {
     let sent = commands(&outgoing);
     assert!(
         sent.iter()
-            .any(|(_, c)| matches!(c, Command::Input { terminal_id: 2, data } if data == b"right")),
+            .any(|(_, command)| key_text(command, 2, "right")),
         "sent={sent:?}, online={}, pending={:?}, active={:?}",
         rt.state.online,
         rt.state.pending,
@@ -522,7 +629,7 @@ fn workspace_dialog_keeps_typing_out_of_the_shell_and_creates_named_collection()
     assert!(
         !commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { .. }))
+            .any(|(_, command)| terminal_input(command))
     );
     click(&mut rt, "dialog-submit");
     assert!(commands(&outgoing).iter().any(
@@ -969,7 +1076,7 @@ fn exited_shell_exposes_explicit_start_action_without_accepting_input() {
     assert!(
         !commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { .. }))
+            .any(|(_, command)| terminal_input(command))
     );
     click(&mut rt, "start-shell");
     assert!(
@@ -1223,6 +1330,6 @@ fn disconnected_client_stops_accepting_input_and_keeps_useful_error() {
     });
     assert!(!state.online);
     assert_eq!(state.notice.as_deref(), Some("Core is stopping"));
-    state.input(b"x".to_vec());
+    state.raw_input(b"x".to_vec());
     assert!(commands(&outgoing).is_empty());
 }

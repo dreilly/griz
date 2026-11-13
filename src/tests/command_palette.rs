@@ -359,7 +359,7 @@ fn quick_open_searches_across_workspaces_and_waits_for_the_final_selection_ack()
     assert!(
         commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { terminal_id: 3, data } if data == b"x"))
+            .any(|(_, command)| key_text(command, 3, "x"))
     );
 }
 
@@ -422,7 +422,7 @@ fn search_paste_no_matches_close_shortcut_and_escape_never_reach_the_shell() {
     assert!(
         commands(&outgoing)
             .iter()
-            .any(|(_, c)| matches!(c, Command::Input { data, .. } if data == b"x"))
+            .any(|(_, command)| key_text(command, 1, "x"))
     );
 }
 

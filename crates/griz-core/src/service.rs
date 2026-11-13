@@ -453,6 +453,7 @@ impl Service {
         let refresh = !matches!(
             &command,
             Command::Input { .. }
+                | Command::Key { .. }
                 | Command::Mouse { .. }
                 | Command::Scroll { .. }
                 | Command::Resize { .. }
@@ -624,6 +625,38 @@ impl Service {
                     .map_err(|error| {
                         format!("terminal {terminal_id} input unavailable: {error}")
                     })?;
+                self.follow_live(client_id, terminal_id);
+                Ok(Outcome::Input)
+            }
+            Command::Key { terminal_id, event } => {
+                event
+                    .validate()
+                    .map_err(|message| format!("terminal key input: {message}"))?;
+                if self.active_terminal(client_id) != Some(terminal_id) {
+                    return Err(format!("terminal {terminal_id} is not selected"));
+                }
+                let (workspace_index, terminal_index) = self
+                    .terminal_location(terminal_id)
+                    .ok_or_else(|| format!("unknown terminal {terminal_id}"))?;
+                let terminal = &mut self.workspaces[workspace_index].terminals[terminal_index];
+                if terminal.exited.is_some() {
+                    return Err(format!("terminal {terminal_id} has exited"));
+                }
+                let input = terminal
+                    .session
+                    .input()
+                    .cloned()
+                    .ok_or_else(|| format!("terminal {terminal_id} input is closed"))?;
+                let data = terminal
+                    .vt
+                    .key_input(&event)
+                    .map_err(|error| format!("terminal {terminal_id} key input: {error}"))?;
+                if data.is_empty() {
+                    return Ok(Outcome::Requester);
+                }
+                input.try_send(data).map_err(|error| {
+                    format!("terminal {terminal_id} input unavailable: {error}")
+                })?;
                 self.follow_live(client_id, terminal_id);
                 Ok(Outcome::Input)
             }
