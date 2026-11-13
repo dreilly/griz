@@ -30,19 +30,25 @@ This is primarily static evidence, not a live interoperability test matrix.
 
 ## Highest-priority follow-ups
 
-### 1. Use terminal-aware paste encoding and unsafe-paste confirmation
+### 1. Terminal-aware paste encoding and unsafe-paste confirmation — addressed
 
-**Confirmed:** `src/input.rs::paste` manually removes ESC, normalizes newlines,
-and optionally adds bracketed-paste delimiters. `src/ui.rs` sends the resulting
-bytes as generic input. Unbracketed multiline paste can immediately execute
-multiple shell commands without confirmation.
+Paste is now a distinct GUI → core operation. Core calls bundled
+`ghostty_terminal_paste` against the target terminal's live modes, so mode 2004
+bracketed multiline flows without a prompt, while Ghostty's `GHOSTTY_REJECTED`
+result opens a modal for unsafe unbracketed line terminators or a bracketed-paste
+terminator. Ghostty also performs control-byte sanitization and newline framing.
 
-**Ghostty support:** `ghostty_terminal_paste`, `GhosttyPaste`, `GHOSTTY_REJECTED`,
-Kitty paste mode 5522, and `ghostty_paste_encode` (`paste.h`).
+The confirmation event contains only fixed-size counts and identifiers, never the
+clipboard text. Core holds at most one paste (maximum 256 KiB of raw UTF-8) per
+client behind a one-use token bound to the original terminal and shell generation.
+Selection changes, replacement pastes, shell replacement/exit/closure, and client
+disconnect invalidate it. Confirmation rechecks the selected target and generation,
+then encodes again against the terminal's current modes; it never reroutes.
 
-**Suggested scope:** A distinct paste command, encoded against the live terminal
-in core/shim, with a rejection/confirmation round trip. Clipboard-read callbacks
-for Kitty paste events need an explicit permission/ownership policy.
+`GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ` remains unset. Consequently Kitty mode 5522
+honestly falls back to text paste rather than advertising clipboard ownership or
+permission that Griz does not implement. Clipboard reads remain tracked separately
+under terminal clipboard operations below.
 
 ### 2. Stop dropping SGR styles, especially invisible text
 

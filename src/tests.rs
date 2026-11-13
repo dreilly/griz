@@ -1072,7 +1072,7 @@ fn paste_targets_the_selected_terminal_but_dialog_paste_edits_the_field() {
     rt.paste("echo hello");
     rt.frame(0.0);
     assert!(commands(&outgoing).iter().any(
-        |(_, c)| matches!(c, Command::Input { terminal_id: 1, data } if data == b"echo hello")
+        |(_, c)| matches!(c, Command::Paste { terminal_id: 1, text } if text == "echo hello")
     ));
     click(&mut rt, "new-workspace");
     click(&mut rt, "dialog-input");
@@ -1080,6 +1080,130 @@ fn paste_targets_the_selected_terminal_but_dialog_paste_edits_the_field() {
     rt.frame(0.0);
     assert_eq!(rt.state.draft.text, "Pasted name");
     assert!(commands(&outgoing).is_empty());
+}
+
+fn confirmation(
+    serial: u64,
+    paste_id: u64,
+    terminal_id: TerminalId,
+    shell_pid: u32,
+) -> client::PasteConfirmation {
+    client::PasteConfirmation {
+        serial,
+        paste_id,
+        terminal_id,
+        shell_pid,
+        byte_count: 17,
+        line_count: 2,
+    }
+}
+
+#[test]
+fn unsafe_paste_confirmation_is_modal_and_confirm_is_one_explicit_command() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1000.0, 680.0));
+    commands(&outgoing);
+    rt.update(|state, _| state.show_paste_confirmation(confirmation(4, 9, 1, 101)));
+    for _ in 0..2 {
+        rt.frame(1.0 / 60.0);
+    }
+    assert!(rt.find("paste-confirmation").is_some());
+    assert!(rt.find("paste-confirm").is_some());
+    assert!(
+        rt.state.ready(),
+        "confirmation button unexpectedly disabled"
+    );
+    commands(&outgoing);
+    rt.paste("must stay local while modal");
+    rt.key(rune::Key::Text("x".into()).into());
+    rt.frame(0.0);
+    let blocked = commands(&outgoing);
+    assert!(blocked.is_empty(), "modal leaked commands: {blocked:?}");
+    assert!(rt.state.paste_confirmation.is_some());
+
+    click(&mut rt, "paste-confirm");
+    assert!(rt.state.paste_confirmation.is_none());
+    let sent = commands(&outgoing);
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [(_, Command::ConfirmPaste { paste_id: 9 })]
+        ),
+        "sent={sent:?}"
+    );
+}
+
+#[test]
+fn unsafe_paste_escape_and_outside_click_cancel_without_pasting() {
+    for outside in [false, true] {
+        let (state, outgoing) = mock();
+        let mut rt = make_runtime(state, (1000.0, 680.0));
+        commands(&outgoing);
+        rt.update(|state, _| state.show_paste_confirmation(confirmation(4, 11, 1, 101)));
+        for _ in 0..2 {
+            rt.frame(1.0 / 60.0);
+        }
+        commands(&outgoing);
+        if outside {
+            rt.pointer_down(8.0, 100.0);
+            rt.pointer_up(8.0, 100.0);
+        } else {
+            rt.key(rune::Key::Escape.into());
+        }
+        rt.frame(0.0);
+        assert!(rt.state.paste_confirmation.is_none(), "outside={outside}");
+        let sent = commands(&outgoing);
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [(_, Command::CancelPaste { paste_id: 11 })]
+            ),
+            "outside={outside}, sent={sent:?}"
+        );
+    }
+}
+
+#[test]
+fn stale_offline_or_changed_terminal_confirmation_never_opens_or_reroutes() {
+    let (mut state, outgoing) = mock();
+    state.show_paste_confirmation(confirmation(4, 12, 2, 102));
+    assert!(state.paste_confirmation.is_none());
+    assert!(matches!(
+        commands(&outgoing).as_slice(),
+        [(_, Command::CancelPaste { paste_id: 12 })]
+    ));
+
+    state.show_paste_confirmation(confirmation(5, 13, 1, 101));
+    assert!(state.paste_confirmation.is_some());
+    let mut changed = snapshot();
+    changed.active_terminal = Some(2);
+    changed.terminal.as_mut().unwrap().id = 2;
+    changed.terminal.as_mut().unwrap().shell_pid = 102;
+    state.apply(changed);
+    assert!(state.paste_confirmation.is_none());
+    assert!(commands(&outgoing).is_empty());
+
+    state.online = false;
+    state.show_paste_confirmation(confirmation(6, 14, 2, 102));
+    assert!(state.paste_confirmation.is_none());
+    assert!(commands(&outgoing).is_empty());
+}
+
+#[test]
+fn paste_confirmation_arrives_through_bounded_client_inbox() {
+    let (mut state, outgoing) = mock();
+    let client = state.client.as_ref().unwrap();
+    client.inbox.lock().unwrap().paste_confirmation = Some(confirmation(7, 15, 1, 101));
+    let mut rt = make_runtime(State::default(), (1000.0, 680.0));
+    rt.update(|_, tx| {
+        assert!(poll(&mut state, 0.0, tx));
+    });
+    assert_eq!(state.paste_confirmation.unwrap().paste_id, 15);
+    state.cancel_paste();
+    assert!(matches!(
+        commands(&outgoing).as_slice(),
+        [(_, Command::CancelPaste { paste_id: 15 })]
+    ));
 }
 
 #[test]

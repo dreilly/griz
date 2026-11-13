@@ -464,12 +464,12 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .on_paste(|s: &mut State, text, tx| {
             if !s.settings_open
                 && s.dialog.is_none()
+                && s.paste_confirmation.is_none()
                 && !s.palette.is_open()
                 && crate::terminal_focus(s, tx)
             {
                 s.prefix_waiting = false;
-                let bracketed = s.screen().is_some_and(|screen| screen.bracketed_paste);
-                s.input(crate::input::paste(text, bracketed));
+                s.request_paste(text);
             }
         })
         .child(titlebar)
@@ -573,7 +573,71 @@ fn empty_workspaces(state: &State, p: &Palette, cx: &Cx<State>) -> El {
         )
 }
 
+fn paste_confirmation(state: &State, p: &Palette) -> Option<El> {
+    let confirmation = state.paste_confirmation?;
+    let lines = if confirmation.line_count == 1 {
+        "1 line".to_owned()
+    } else {
+        format!("{} lines", confirmation.line_count)
+    };
+    let bytes = if confirmation.byte_count == 1 {
+        "1 byte".to_owned()
+    } else {
+        format!("{} bytes", confirmation.byte_count)
+    };
+    Some(
+        el().key("paste-confirmation-scrim")
+            .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+            .fill(Color::BLACK.alpha(0.55))
+            .center()
+            .child(
+                col()
+                    .key("paste-confirmation")
+                    .w(410.0)
+                    .padding(22.0)
+                    .gap(16.0)
+                    .radius(10.0)
+                    .fill(p.panel)
+                    .role("dialog")
+                    .label("Confirm unsafe paste")
+                    .modal(true, |s: &mut State| s.cancel_paste())
+                    .child(text("Paste potentially unsafe text?").font(p.title).color(p.ink))
+                    .child(
+                        text(format!(
+                            "Ghostty detected text that could submit commands ({lines}, {bytes}). Clipboard contents are not shown."
+                        ))
+                        .font(p.label)
+                        .color(p.muted)
+                        .wrap(),
+                    )
+                    .child(
+                        row()
+                            .w_full()
+                            .gap(8.0)
+                            .child(el().grow(1.0))
+                            .child(button("paste-cancel", "Cancel", p).on_press_tx(
+                                |s: &mut State, tx| {
+                                    s.cancel_paste();
+                                    tx.blur();
+                                },
+                            ))
+                            .child(
+                                button("paste-confirm", "Paste", p)
+                                    .disabled(!state.ready())
+                                    .on_press_tx(|s: &mut State, tx| {
+                                        s.confirm_paste();
+                                        tx.blur();
+                                    }),
+                            ),
+                    ),
+            ),
+    )
+}
+
 fn dialog(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
+    if state.paste_confirmation.is_some() {
+        return paste_confirmation(state, p);
+    }
     let dialog = state.dialog.as_ref()?;
     let (title, hint, submit, placeholder) = match dialog {
         Dialog::WorkspaceMenu(id, position) => {

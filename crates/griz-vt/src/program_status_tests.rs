@@ -9,14 +9,14 @@ fn report(vt: &mut Terminal, body: &str) {
 fn capability_reply_precedes_da_and_never_echoes_report_text() {
     let mut vt = Terminal::new(80, 24).unwrap();
     vt.write(b"\x1b]7501;?\x1b\\\x1b[c");
-    let replies = String::from_utf8(vt.take_responses()).unwrap();
+    let replies = String::from_utf8(vt.take_responses().unwrap()).unwrap();
     let expected =
         "\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question,auth\x1b\\";
     assert!(replies.starts_with(expected), "{replies:?}");
     assert!(replies[expected.len()..].starts_with("\x1b[?"));
     assert!(vt.program_status().is_empty());
     report(&mut vt, "state=blocked:app=tool:msg=QXBwbHk/");
-    assert!(vt.take_responses().is_empty());
+    assert!(vt.take_responses().unwrap().is_empty());
     assert_eq!(vt.program_status()[0].message, "Apply?");
 }
 

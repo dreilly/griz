@@ -57,6 +57,8 @@ struct GrizVt {
     uint8_t* responses;
     size_t responses_len;
     size_t responses_cap;
+    GhosttyResult responses_error;
+    bool fail_next_capture_allocation;
     void (*program_status)(void*, const GhosttyTerminalProgramStatus*);
     void (*prompt_start)(void*);
     void* status_userdata;
@@ -84,6 +86,19 @@ static void griz_semantic_prompt(
     }
 }
 
+static void griz_capture_discard(struct GrizVt* vt) {
+    free(vt->responses);
+    vt->responses = NULL;
+    vt->responses_len = 0;
+    vt->responses_cap = 0;
+    vt->responses_error = GHOSTTY_SUCCESS;
+}
+
+static void griz_capture_fail(struct GrizVt* vt, GhosttyResult error) {
+    griz_capture_discard(vt);
+    vt->responses_error = error;
+}
+
 static void griz_write_pty(
     GhosttyTerminal terminal,
     void* userdata,
@@ -92,7 +107,11 @@ static void griz_write_pty(
 ) {
     (void)terminal;
     struct GrizVt* vt = userdata;
-    if (vt == NULL || data == NULL || len == 0 || len > SIZE_MAX - vt->responses_len) {
+    if (vt == NULL || vt->responses_error != GHOSTTY_SUCCESS || len == 0) {
+        return;
+    }
+    if (data == NULL || len > SIZE_MAX - vt->responses_len) {
+        griz_capture_fail(vt, GHOSTTY_OUT_OF_MEMORY);
         return;
     }
 
@@ -106,8 +125,14 @@ static void griz_write_pty(
             }
             capacity *= 2;
         }
-        uint8_t* responses = realloc(vt->responses, capacity);
+        uint8_t* responses = NULL;
+        if (vt->fail_next_capture_allocation) {
+            vt->fail_next_capture_allocation = false;
+        } else {
+            responses = realloc(vt->responses, capacity);
+        }
         if (responses == NULL) {
+            griz_capture_fail(vt, GHOSTTY_OUT_OF_MEMORY);
             return;
         }
         vt->responses = responses;
@@ -839,14 +864,82 @@ fail:
     return result;
 }
 
-void griz_vt_take_responses(struct GrizVt* vt, uint8_t** data, size_t* len) {
-    if (data == NULL || len == NULL) {
-        return;
+static bool griz_paste_read(void* userdata, GhosttyString mime, GhosttyWriter writer) {
+    (void)mime;
+    GhosttyString* text = userdata;
+    if (text->len == 0) {
+        return true;
+    }
+    return writer.write(writer.userdata, (const uint8_t*)text->ptr, text->len);
+}
+
+int griz_vt_paste(
+    struct GrizVt* vt,
+    const uint8_t* data,
+    size_t len,
+    uint8_t allow_unsafe,
+    uint8_t** out_data,
+    size_t* out_len,
+    uint8_t* out_pasted
+) {
+    if (vt == NULL || (data == NULL && len != 0) || out_data == NULL ||
+        out_len == NULL || out_pasted == NULL) {
+        return GHOSTTY_INVALID_VALUE;
+    }
+    *out_data = NULL;
+    *out_len = 0;
+    *out_pasted = 0;
+    if (vt->responses_len != 0 || vt->responses_error != GHOSTTY_SUCCESS) {
+        return GHOSTTY_INVALID_VALUE;
+    }
+
+    static const char mime_bytes[] = "text/plain;charset=utf-8";
+    GhosttyString mime = {
+        .ptr = (const uint8_t*)mime_bytes,
+        .len = sizeof(mime_bytes) - 1,
+    };
+    GhosttyString text = {.ptr = data, .len = len};
+    GhosttyPaste paste = GHOSTTY_INIT_SIZED(GhosttyPaste);
+    paste.location = GHOSTTY_CLIPBOARD_LOCATION_STANDARD;
+    paste.source = GHOSTTY_PASTE_SOURCE_CLIPBOARD;
+    paste.mimes = &mime;
+    paste.mimes_len = 1;
+    paste.reader = (GhosttyMimeReader){.read = griz_paste_read, .userdata = &text};
+    paste.allow_unsafe = allow_unsafe != 0;
+
+    bool pasted = false;
+    GhosttyResult result = ghostty_terminal_paste(vt->terminal, &paste, &pasted);
+    if (vt->responses_error != GHOSTTY_SUCCESS) {
+        result = vt->responses_error;
+    }
+    if (result != GHOSTTY_SUCCESS) {
+        griz_capture_discard(vt);
+        return result;
+    }
+    if (!pasted && vt->responses_len != 0) {
+        griz_capture_discard(vt);
+        return GHOSTTY_INVALID_VALUE;
+    }
+
+    *out_data = vt->responses;
+    *out_len = vt->responses_len;
+    *out_pasted = pasted ? 1 : 0;
+    vt->responses = NULL;
+    vt->responses_len = 0;
+    vt->responses_cap = 0;
+    return GHOSTTY_SUCCESS;
+}
+
+int griz_vt_take_responses(struct GrizVt* vt, uint8_t** data, size_t* len) {
+    if (vt == NULL || data == NULL || len == NULL) {
+        return GHOSTTY_INVALID_VALUE;
     }
     *data = NULL;
     *len = 0;
-    if (vt == NULL) {
-        return;
+    if (vt->responses_error != GHOSTTY_SUCCESS) {
+        GhosttyResult result = vt->responses_error;
+        griz_capture_discard(vt);
+        return result;
     }
 
     *data = vt->responses;
@@ -854,6 +947,13 @@ void griz_vt_take_responses(struct GrizVt* vt, uint8_t** data, size_t* len) {
     vt->responses = NULL;
     vt->responses_len = 0;
     vt->responses_cap = 0;
+    return GHOSTTY_SUCCESS;
+}
+
+void griz_vt_fail_next_capture_allocation(struct GrizVt* vt) {
+    if (vt != NULL) {
+        vt->fail_next_capture_allocation = true;
+    }
 }
 
 void griz_vt_bytes_free(uint8_t* data) {

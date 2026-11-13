@@ -392,6 +392,19 @@ pub enum Command {
         terminal_id: TerminalId,
         data: Vec<u8>,
     },
+    /// Paste clipboard text using the target terminal's current VT modes.
+    Paste {
+        terminal_id: TerminalId,
+        text: String,
+    },
+    /// Approve the exact server-held paste represented by this one-use token.
+    ConfirmPaste {
+        paste_id: u64,
+    },
+    /// Discard the exact server-held paste represented by this one-use token.
+    CancelPaste {
+        paste_id: u64,
+    },
     Mouse {
         terminal_id: TerminalId,
         event: MouseInput,
@@ -419,6 +432,16 @@ pub enum Event {
     Stopping,
     View {
         state: ViewState,
+    },
+    /// Fixed-size metadata for a server-held unsafe paste; the event never echoes its text.
+    PasteConfirmationRequired {
+        /// Serial of the Paste command that created this token.
+        serial: u64,
+        paste_id: u64,
+        terminal_id: TerminalId,
+        shell_pid: u32,
+        byte_count: u32,
+        line_count: u32,
     },
     Error {
         serial: Option<u64>,
@@ -497,6 +520,46 @@ mod tests {
             }
         ));
     }
+    #[test]
+    fn paste_commands_and_confirmation_metadata_have_distinct_schema() {
+        assert_eq!(
+            serde_json::to_value(Command::Paste {
+                terminal_id: 7,
+                text: "界\n".into(),
+            })
+            .unwrap(),
+            serde_json::json!({"type": "paste", "terminal_id": 7, "text": "界\n"})
+        );
+        assert_eq!(
+            serde_json::to_value(Command::ConfirmPaste { paste_id: 9 }).unwrap(),
+            serde_json::json!({"type": "confirm_paste", "paste_id": 9})
+        );
+        assert_eq!(
+            serde_json::to_value(Command::CancelPaste { paste_id: 9 }).unwrap(),
+            serde_json::json!({"type": "cancel_paste", "paste_id": 9})
+        );
+        assert_eq!(
+            serde_json::to_value(Event::PasteConfirmationRequired {
+                serial: 3,
+                paste_id: 9,
+                terminal_id: 7,
+                shell_pid: 42,
+                byte_count: 4,
+                line_count: 2,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "type": "paste_confirmation_required",
+                "serial": 3,
+                "paste_id": 9,
+                "terminal_id": 7,
+                "shell_pid": 42,
+                "byte_count": 4,
+                "line_count": 2
+            })
+        );
+    }
+
     #[test]
     fn pane_layout_helpers_and_schema() {
         let layout = PaneLayout::Split {

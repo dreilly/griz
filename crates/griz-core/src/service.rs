@@ -7,7 +7,7 @@ use griz_protocol::{
     PanePlacement, PreviewFrame, PreviewTarget, Screen, SplitDirection, TabInfo, TerminalFrame,
     TerminalId, TerminalInfo, ViewState, WorkspaceAccent, WorkspaceId, WorkspaceInfo, dimensions,
 };
-use griz_vt::{Terminal, Viewport};
+use griz_vt::{PasteResult, Terminal, Viewport};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc::Receiver, mpsc::RecvTimeoutError, mpsc::SyncSender};
@@ -21,6 +21,27 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn output_frame_deadline(last: Option<Instant>, now: Instant) -> Instant {
     last.map_or(now, |last| (last + FRAME_INTERVAL).max(now))
+}
+
+fn paste_line_count(text: &str) -> u32 {
+    if text.is_empty() {
+        return 0;
+    }
+    let mut lines = 1u32;
+    let mut bytes = text.as_bytes().iter().copied().peekable();
+    while let Some(byte) = bytes.next() {
+        match byte {
+            b'\r' => {
+                lines += 1;
+                if bytes.peek() == Some(&b'\n') {
+                    bytes.next();
+                }
+            }
+            b'\n' => lines += 1,
+            _ => {}
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
@@ -112,12 +133,21 @@ struct Workspace {
     next_terminal_number: usize,
 }
 
+struct PendingPaste {
+    id: u64,
+    terminal_id: TerminalId,
+    generation: u64,
+    text: String,
+}
+
 struct Client {
     active_workspace: WorkspaceId,
     selected: HashMap<WorkspaceId, Option<TerminalId>>,
     dimensions: Option<(u16, u16)>,
     preview: Option<PreviewTarget>,
     viewports: HashMap<TerminalId, Viewport>,
+    pending_paste: Option<PendingPaste>,
+    next_paste_id: u64,
     ack: u64,
     outbox: Arc<Outbox>,
 }
@@ -306,6 +336,8 @@ impl Service {
                 dimensions: client_dimensions,
                 preview: None,
                 viewports: HashMap::new(),
+                pending_paste: None,
+                next_paste_id: 1,
                 ack: 0,
                 outbox,
             },
@@ -320,6 +352,7 @@ impl Service {
     }
 
     fn detach(&mut self, client_id: ClientId) {
+        self.invalidate_pending_paste(client_id);
         self.clients.remove(&client_id);
         self.pending_input_acks.remove(&client_id);
         if self.clients.is_empty() {
@@ -349,6 +382,10 @@ impl Service {
         }
         client.ack = serial;
         let outbox = client.outbox.clone();
+        if matches!(&command, Command::Paste { .. }) {
+            // Every new paste replaces any older confirmation, even if the new request is bad.
+            self.invalidate_pending_paste(client_id);
+        }
 
         // Selection/name changes should use a fresh cwd immediately, not wait for
         // the next poll. Do not perform process queries on every keystroke or resize.
@@ -359,8 +396,12 @@ impl Service {
                 | Command::Scroll { .. }
                 | Command::Resize { .. }
                 | Command::SetPreview { .. }
+                | Command::Paste { .. }
+                | Command::ConfirmPaste { .. }
+                | Command::CancelPaste { .. }
         );
-        let outcome = self.apply_command(client_id, command);
+        let outcome = self.apply_command(client_id, serial, command);
+        self.invalidate_stale_pastes();
         let directories_changed = refresh && self.refresh_directories();
         match outcome {
             Ok(Outcome::Input) => {
@@ -393,6 +434,7 @@ impl Service {
     fn apply_command(
         &mut self,
         client_id: ClientId,
+        serial: u64,
         command: Command,
     ) -> std::result::Result<Outcome, String> {
         match command {
@@ -528,6 +570,11 @@ impl Service {
                     .remove(&terminal_id);
                 Ok(Outcome::Input)
             }
+            Command::Paste { terminal_id, text } => {
+                self.begin_paste(client_id, serial, terminal_id, text)
+            }
+            Command::ConfirmPaste { paste_id } => self.confirm_paste(client_id, paste_id),
+            Command::CancelPaste { paste_id } => self.cancel_paste(client_id, paste_id),
             Command::Mouse { terminal_id, event } => {
                 let (workspace_index, terminal_index) = self
                     .terminal_location(terminal_id)
@@ -593,6 +640,192 @@ impl Service {
                 Ok(Outcome::Requester)
             }
             Command::StartShell { terminal_id } => self.start_shell(terminal_id),
+        }
+    }
+
+    fn begin_paste(
+        &mut self,
+        client_id: ClientId,
+        serial: u64,
+        terminal_id: TerminalId,
+        text: String,
+    ) -> std::result::Result<Outcome, String> {
+        if text.len() > MAX_INPUT {
+            return Err(format!("terminal paste exceeds {MAX_INPUT} UTF-8 bytes"));
+        }
+        if self.active_terminal(client_id) != Some(terminal_id) {
+            return Err(format!("terminal {terminal_id} is not selected"));
+        }
+        let (workspace_index, terminal_index) = self
+            .terminal_location(terminal_id)
+            .ok_or_else(|| format!("unknown terminal {terminal_id}"))?;
+        let terminal = &mut self.workspaces[workspace_index].terminals[terminal_index];
+        if terminal.exited.is_some() {
+            return Err(format!("terminal {terminal_id} has exited"));
+        }
+        let input = terminal
+            .session
+            .input()
+            .cloned()
+            .ok_or_else(|| format!("terminal {terminal_id} input is closed"))?;
+        let generation = terminal.generation;
+        let shell_pid = terminal.session.pid;
+        match terminal
+            .vt
+            .paste(&text, false)
+            .map_err(|error| format!("terminal {terminal_id} paste: {error}"))?
+        {
+            PasteResult::Empty => Ok(Outcome::Requester),
+            PasteResult::Written(data) => {
+                input.try_send(data).map_err(|error| {
+                    format!("terminal {terminal_id} input unavailable: {error}")
+                })?;
+                self.clients
+                    .get_mut(&client_id)
+                    .unwrap()
+                    .viewports
+                    .remove(&terminal_id);
+                Ok(Outcome::Input)
+            }
+            PasteResult::Rejected => {
+                let byte_count = u32::try_from(text.len()).unwrap();
+                let line_count = paste_line_count(&text);
+                let client = self.clients.get_mut(&client_id).unwrap();
+                let paste_id = client.next_paste_id;
+                client.next_paste_id = client
+                    .next_paste_id
+                    .checked_add(1)
+                    .ok_or_else(|| "paste confirmation token space exhausted".to_string())?;
+                client.pending_paste = Some(PendingPaste {
+                    id: paste_id,
+                    terminal_id,
+                    generation,
+                    text,
+                });
+                client
+                    .outbox
+                    .paste_confirmation(Event::PasteConfirmationRequired {
+                        serial,
+                        paste_id,
+                        terminal_id,
+                        shell_pid,
+                        byte_count,
+                        line_count,
+                    });
+                Ok(Outcome::Requester)
+            }
+        }
+    }
+
+    fn confirm_paste(
+        &mut self,
+        client_id: ClientId,
+        paste_id: u64,
+    ) -> std::result::Result<Outcome, String> {
+        let pending = {
+            let client = self.clients.get_mut(&client_id).unwrap();
+            if client.pending_paste.as_ref().map(|paste| paste.id) != Some(paste_id) {
+                return Err(format!("stale paste confirmation {paste_id}"));
+            }
+            let pending = client.pending_paste.take().unwrap();
+            client.outbox.cancel_paste_confirmation(paste_id);
+            pending
+        };
+        if self.active_terminal(client_id) != Some(pending.terminal_id) {
+            return Err(format!(
+                "terminal {} is no longer selected",
+                pending.terminal_id
+            ));
+        }
+        let (workspace_index, terminal_index) = self
+            .terminal_location(pending.terminal_id)
+            .ok_or_else(|| format!("unknown terminal {}", pending.terminal_id))?;
+        let terminal = &mut self.workspaces[workspace_index].terminals[terminal_index];
+        if terminal.generation != pending.generation {
+            return Err(format!(
+                "terminal {} shell was replaced",
+                pending.terminal_id
+            ));
+        }
+        if terminal.exited.is_some() {
+            return Err(format!("terminal {} has exited", pending.terminal_id));
+        }
+        let input = terminal
+            .session
+            .input()
+            .cloned()
+            .ok_or_else(|| format!("terminal {} input is closed", pending.terminal_id))?;
+        match terminal
+            .vt
+            .paste(&pending.text, true)
+            .map_err(|error| format!("terminal {} paste: {error}", pending.terminal_id))?
+        {
+            PasteResult::Empty => Ok(Outcome::Requester),
+            PasteResult::Written(data) => {
+                input.try_send(data).map_err(|error| {
+                    format!(
+                        "terminal {} input unavailable: {error}",
+                        pending.terminal_id
+                    )
+                })?;
+                self.clients
+                    .get_mut(&client_id)
+                    .unwrap()
+                    .viewports
+                    .remove(&pending.terminal_id);
+                Ok(Outcome::Input)
+            }
+            PasteResult::Rejected => Err(format!(
+                "terminal {} rejected an approved paste",
+                pending.terminal_id
+            )),
+        }
+    }
+
+    fn cancel_paste(
+        &mut self,
+        client_id: ClientId,
+        paste_id: u64,
+    ) -> std::result::Result<Outcome, String> {
+        let client = self.clients.get_mut(&client_id).unwrap();
+        if client.pending_paste.as_ref().map(|paste| paste.id) != Some(paste_id) {
+            return Err(format!("stale paste cancellation {paste_id}"));
+        }
+        client.pending_paste = None;
+        client.outbox.cancel_paste_confirmation(paste_id);
+        Ok(Outcome::Requester)
+    }
+
+    fn invalidate_pending_paste(&mut self, client_id: ClientId) {
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return;
+        };
+        if let Some(paste) = client.pending_paste.take() {
+            client.outbox.cancel_paste_confirmation(paste.id);
+        }
+    }
+
+    fn invalidate_stale_pastes(&mut self) {
+        let invalid = self
+            .clients
+            .iter()
+            .filter_map(|(client_id, client)| {
+                let paste = client.pending_paste.as_ref()?;
+                if self.active_terminal(*client_id) != Some(paste.terminal_id) {
+                    return Some(*client_id);
+                }
+                let Some((workspace, terminal)) = self.terminal_location(paste.terminal_id) else {
+                    return Some(*client_id);
+                };
+                let terminal = &self.workspaces[workspace].terminals[terminal];
+                (terminal.generation != paste.generation
+                    || terminal.exited.is_some()
+                    || terminal.session.input().is_none())
+                .then_some(*client_id)
+            })
+            .collect::<Vec<_>>();
+        for client_id in invalid {
+            self.invalidate_pending_paste(client_id);
         }
     }
 
@@ -1022,12 +1255,18 @@ impl Service {
                 .reconcile(terminal.vt.program_status());
             self.catalog_dirty |= !self.clients.is_empty();
         }
-        let responses = terminal.vt.take_responses();
-        if !responses.is_empty()
-            && let Some(input) = terminal.session.input()
-            && let Err(error) = input.try_send(responses)
-        {
-            eprintln!("griz-core: terminal {terminal_id} response: {error}");
+        match terminal.vt.take_responses() {
+            Ok(responses) if !responses.is_empty() => {
+                if let Some(input) = terminal.session.input()
+                    && let Err(error) = input.try_send(responses)
+                {
+                    eprintln!("griz-core: terminal {terminal_id} response: {error}");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("griz-core: terminal {terminal_id} response capture: {error}");
+            }
         }
         self.queue_frame(terminal_id);
     }
@@ -1046,6 +1285,7 @@ impl Service {
         terminal
             .agent_notifications
             .reconcile(terminal.vt.program_status());
+        self.invalidate_stale_pastes();
         self.dirty.clear();
         self.frame_deadline = None;
         self.publish_all()

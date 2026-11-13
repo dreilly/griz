@@ -18,7 +18,10 @@ use std::slice;
 const CELL_BOLD: u8 = 1 << 0;
 const CELL_ITALIC: u8 = 1 << 1;
 const CELL_UNDERLINE: u8 = 1 << 2;
+#[cfg(test)]
+const OUT_OF_MEMORY: c_int = -1;
 const INVALID_VALUE: c_int = -2;
+const REJECTED: c_int = -7;
 
 #[repr(C)]
 struct GrizVt {
@@ -85,12 +88,23 @@ unsafe extern "C" {
         data: *mut *mut u8,
         len: *mut usize,
     ) -> c_int;
+    fn griz_vt_paste(
+        vt: *mut GrizVt,
+        data: *const u8,
+        len: usize,
+        allow_unsafe: u8,
+        out_data: *mut *mut u8,
+        out_len: *mut usize,
+        out_pasted: *mut u8,
+    ) -> c_int;
     fn griz_vt_set_viewport(vt: *mut GrizVt, position: *mut c_void) -> c_int;
     fn griz_vt_scroll(vt: *mut GrizVt, rows: i32, out: *mut *mut c_void) -> c_int;
     fn griz_vt_viewport_free(position: *mut c_void);
     fn griz_vt_snapshot(vt: *mut GrizVt, out: *mut *mut GrizVtSnapshot) -> c_int;
     fn griz_vt_snapshot_free(snapshot: *mut GrizVtSnapshot);
-    fn griz_vt_take_responses(vt: *mut GrizVt, data: *mut *mut u8, len: *mut usize);
+    fn griz_vt_take_responses(vt: *mut GrizVt, data: *mut *mut u8, len: *mut usize) -> c_int;
+    #[cfg(test)]
+    fn griz_vt_fail_next_capture_allocation(vt: *mut GrizVt);
     fn griz_vt_bytes_free(data: *mut u8);
 }
 
@@ -124,6 +138,17 @@ impl fmt::Display for Error {
 }
 
 impl error::Error for Error {}
+
+/// Result of encoding clipboard text against a terminal's current modes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PasteResult {
+    /// Nothing was available to paste (normally an empty string).
+    Empty,
+    /// Ghostty refused potentially command-injecting text pending confirmation.
+    Rejected,
+    /// Complete bytes ready for the PTY. Controls are sanitized by Ghostty.
+    Written(Vec<u8>),
+}
 
 /// One client's scroll position, tracked through output, pruning, and reflow.
 /// A default viewport follows live output. It is safe to drop after its terminal.
@@ -322,21 +347,57 @@ impl Terminal {
         unsafe { snapshot.to_screen() }
     }
 
+    /// Encodes clipboard text using live terminal modes. Errors and rejections return no bytes.
+    pub fn paste(&mut self, text: &str, allow_unsafe: bool) -> Result<PasteResult, Error> {
+        let mut data = std::ptr::null_mut();
+        let mut len = 0;
+        let mut pasted = 0;
+        // SAFETY: all pointers remain valid for this synchronous call; successful output is
+        // transferred to the caller-owned C allocation.
+        let code = unsafe {
+            griz_vt_paste(
+                self.raw.as_ptr(),
+                text.as_ptr(),
+                text.len(),
+                allow_unsafe.into(),
+                &mut data,
+                &mut len,
+                &mut pasted,
+            )
+        };
+        if code == REJECTED {
+            return Ok(PasteResult::Rejected);
+        }
+        check("encode paste", code)?;
+        let bytes = copy_c_bytes(data, len);
+        if pasted == 0 {
+            if !bytes.is_empty() {
+                return Err(Error {
+                    operation: "encode paste",
+                    code: INVALID_VALUE,
+                });
+            }
+            Ok(PasteResult::Empty)
+        } else {
+            Ok(PasteResult::Written(bytes))
+        }
+    }
+
     /// Returns and clears bytes generated in reply to terminal queries.
-    pub fn take_responses(&mut self) -> Vec<u8> {
+    pub fn take_responses(&mut self) -> Result<Vec<u8>, Error> {
         let mut data = std::ptr::null_mut();
         let mut len = 0;
         // SAFETY: all pointers are valid for this synchronous ownership transfer.
-        unsafe { griz_vt_take_responses(self.raw.as_ptr(), &mut data, &mut len) };
-        let bytes = if len == 0 {
-            Vec::new()
-        } else {
-            // SAFETY: the shim returns `len` initialized bytes when len is nonzero.
-            unsafe { slice::from_raw_parts(data, len) }.to_vec()
-        };
-        // SAFETY: the pointer was allocated by the shim and may be null.
-        unsafe { griz_vt_bytes_free(data) };
-        bytes
+        check("capture terminal responses", unsafe {
+            griz_vt_take_responses(self.raw.as_ptr(), &mut data, &mut len)
+        })?;
+        Ok(copy_c_bytes(data, len))
+    }
+
+    #[cfg(test)]
+    fn fail_next_capture_allocation(&mut self) {
+        // SAFETY: the terminal handle is live; this only arms a deterministic shim test hook.
+        unsafe { griz_vt_fail_next_capture_allocation(self.raw.as_ptr()) }
     }
 }
 
@@ -438,6 +499,18 @@ impl Drop for Snapshot {
         // SAFETY: this is the unique owned snapshot and it is freed exactly once.
         unsafe { griz_vt_snapshot_free(self.0.as_ptr()) }
     }
+}
+
+fn copy_c_bytes(data: *mut u8, len: usize) -> Vec<u8> {
+    let bytes = if len == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: successful shim calls return `len` initialized bytes.
+        unsafe { slice::from_raw_parts(data, len) }.to_vec()
+    };
+    // SAFETY: the pointer was allocated by the shim and may be null.
+    unsafe { griz_vt_bytes_free(data) };
+    bytes
 }
 
 fn check(operation: &'static str, code: c_int) -> Result<(), Error> {
@@ -797,7 +870,69 @@ mod tests {
         assert_eq!(screen.title, "griz title");
         assert!(screen.application_cursor);
         assert!(screen.bracketed_paste);
-        assert_eq!(terminal.take_responses(), b"\x1b[1;1R");
-        assert!(terminal.take_responses().is_empty());
+        assert_eq!(terminal.take_responses().unwrap(), b"\x1b[1;1R");
+        assert!(terminal.take_responses().unwrap().is_empty());
+    }
+
+    #[test]
+    fn paste_uses_live_bracketed_mode_and_rejects_only_unsafe_text() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        assert_eq!(
+            terminal.paste("hello", false).unwrap(),
+            PasteResult::Written(b"hello".to_vec())
+        );
+        assert_eq!(
+            terminal.paste("one\ntwo", false).unwrap(),
+            PasteResult::Rejected
+        );
+        assert_eq!(
+            terminal.paste("one\ntwo", true).unwrap(),
+            PasteResult::Written(b"one\rtwo".to_vec())
+        );
+
+        terminal.write(b"\x1b[?2004h");
+        assert_eq!(
+            terminal.paste("one\ntwo", false).unwrap(),
+            PasteResult::Written(b"\x1b[200~one\ntwo\x1b[201~".to_vec())
+        );
+        assert_eq!(
+            terminal.paste("x\x1b[201~y", false).unwrap(),
+            PasteResult::Rejected
+        );
+    }
+
+    #[test]
+    fn paste_sanitizes_controls_preserves_tabs_unicode_and_handles_empty_text() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        assert_eq!(terminal.paste("", false).unwrap(), PasteResult::Empty);
+        assert_eq!(
+            terminal.paste("a\0\tb\x7fc界", false).unwrap(),
+            PasteResult::Written("a \tb c界".as_bytes().to_vec())
+        );
+    }
+
+    #[test]
+    fn kitty_paste_mode_without_clipboard_read_falls_back_to_text() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        terminal.write(b"\x1b[?5522h");
+        assert_eq!(
+            terminal.paste("fallback", false).unwrap(),
+            PasteResult::Written(b"fallback".to_vec())
+        );
+        terminal.write(b"\x1b[?2004h");
+        assert_eq!(
+            terminal.paste("fallback", false).unwrap(),
+            PasteResult::Written(b"\x1b[200~fallback\x1b[201~".to_vec())
+        );
+    }
+
+    #[test]
+    fn capture_allocation_failure_returns_no_partial_paste() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        terminal.fail_next_capture_allocation();
+        let error = terminal.paste("complete or nothing", false).unwrap_err();
+        assert_eq!(error.code(), OUT_OF_MEMORY);
+        assert_eq!(error.operation(), "encode paste");
+        assert!(terminal.take_responses().unwrap().is_empty());
     }
 }

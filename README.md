@@ -508,7 +508,8 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 - Window/sidebar resize updates libghostty and every visible pane's PTY (SIGWINCH).
 - Enter, Shift+Enter (CSI-u, for multiline input in Pi and compatible TUIs), Backspace,
   Tab, arrows (including application cursor mode), common navigation and function keys,
-  Ctrl-C/Ctrl-D, clipboard paste, and basic IME preedit/commit.
+  Ctrl-C/Ctrl-D, terminal-aware clipboard paste, and basic IME preedit/commit. Paste uses
+  live Ghostty modes; unsafe unbracketed multiline requires a count-only confirmation.
 - Terminal mouse reporting, visible-grid selection, automatic clipboard copy on release,
   and a transient bottom copy confirmation.
 - Detach/reattach, background output, workspace/final-terminal close confirmation,
@@ -525,8 +526,8 @@ and loses the catalog. No launchd integration or reboot restoration is installed
   Dashed, double-line, rounded, and diagonal box drawing still uses the selected font.
   Shade blocks use uniform 25/50/75% foreground coverage rather than stippled patterns.
 - Full snapshots, not dirty-cell deltas. Limits: 16 workspaces, 64 terminals total,
-  16 clients, eight panes per tab, 300 × 120 cells per grid, 256 KiB per input/paste,
-  and 16 MiB per IPC message.
+  16 clients, eight panes per tab, 300 × 120 cells per grid, 256 KiB per input or raw
+  UTF-8 paste, one pending paste confirmation per client, and 16 MiB per IPC message.
 - Starting directories must be absolute existing paths; no file picker or `~` expansion.
 - Multiple clients may view one terminal but share its dimensions; the last
   selection/resize wins. Different terminals have independent dimensions.
@@ -546,8 +547,9 @@ state/directory isolation, output while unselected/detached, independent client
 selections, remembering tabs across workspace switches, creation/rename validation,
 resize, stale IDs, continuous output, explicit close/foreground termination,
 ended-shell replacement, request validation, and single-instance ownership.
-GUI tests cover navigation, dialogs, paste, toolbar focus, input routing while
-selection acknowledgements are pending, empty workspaces, and ended-shell recovery.
+GUI tests cover navigation, dialogs, paste confirmation/cancellation, toolbar focus,
+input routing while selection acknowledgements are pending, empty workspaces, and
+ended-shell recovery.
 Split tests cover nested layouts, both directions, rounded pane spacing, per-pane
 resizing, focus/input acknowledgement safety, cwd inheritance, sibling output,
 multi-client selection, layout collapse, stable tab IDs, and pane limits. Pane interaction

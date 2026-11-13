@@ -19,6 +19,8 @@ const MAX_ERRORS: usize = 64;
 struct Pending {
     view: Option<Arc<Event>>,
     errors: VecDeque<Arc<Event>>,
+    /// At most one unsafe paste can be pending for a client; replacements supersede it.
+    paste_confirmation: Option<Arc<Event>>,
     stopping: bool,
     closed: bool,
 }
@@ -47,6 +49,22 @@ impl Outbox {
         self.changed.notify_one();
     }
 
+    pub fn paste_confirmation(&self, event: Event) {
+        debug_assert!(matches!(event, Event::PasteConfirmationRequired { .. }));
+        let mut pending = self.pending.lock().unwrap();
+        pending.paste_confirmation = Some(Arc::new(event));
+        self.changed.notify_one();
+    }
+
+    pub fn cancel_paste_confirmation(&self, paste_id: u64) {
+        let mut pending = self.pending.lock().unwrap();
+        if pending.paste_confirmation.as_deref().is_some_and(|event| {
+            matches!(event, Event::PasteConfirmationRequired { paste_id: id, .. } if *id == paste_id)
+        }) {
+            pending.paste_confirmation = None;
+        }
+    }
+
     pub fn stopping(&self) {
         let mut pending = self.pending.lock().unwrap();
         pending.stopping = true;
@@ -62,6 +80,11 @@ impl Outbox {
     fn next(&self) -> Option<Arc<Event>> {
         let mut pending = self.pending.lock().unwrap();
         loop {
+            // Deliver a confirmation before any later view. If core invalidates it before the
+            // writer takes it, cancel_paste_confirmation removes it instead.
+            if let Some(confirmation) = pending.paste_confirmation.take() {
+                return Some(confirmation);
+            }
             if let Some(error) = pending.errors.pop_front() {
                 return Some(error);
             }
@@ -193,4 +216,40 @@ fn connection(
     let _ = stream.shutdown(Shutdown::Both);
     let _ = worker.join();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn confirmation(serial: u64, paste_id: u64) -> Event {
+        Event::PasteConfirmationRequired {
+            serial,
+            paste_id,
+            terminal_id: 1,
+            shell_pid: 2,
+            byte_count: 3,
+            line_count: 2,
+        }
+    }
+
+    #[test]
+    fn paste_confirmation_slot_is_bounded_replaceable_and_cancellable() {
+        let outbox = Outbox::default();
+        outbox.paste_confirmation(confirmation(1, 10));
+        outbox.paste_confirmation(confirmation(2, 11));
+        assert!(matches!(
+            outbox.next().as_deref(),
+            Some(Event::PasteConfirmationRequired {
+                serial: 2,
+                paste_id: 11,
+                ..
+            })
+        ));
+
+        outbox.paste_confirmation(confirmation(3, 12));
+        outbox.cancel_paste_confirmation(12);
+        outbox.close();
+        assert!(outbox.next().is_none());
+    }
 }

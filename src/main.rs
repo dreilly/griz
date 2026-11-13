@@ -50,6 +50,7 @@ struct State {
     pending: Option<u64>,
     restore: Option<(u32, WorkspaceId, Option<TerminalId>)>,
     dialog: Option<Dialog>,
+    paste_confirmation: Option<client::PasteConfirmation>,
     draft: TextEdit,
     settings: Settings,
     prefs: rune::prefs::Prefs,
@@ -87,6 +88,7 @@ impl Default for State {
             pending: None,
             restore: None,
             dialog: None,
+            paste_confirmation: None,
             draft: TextEdit::new(""),
             settings: Settings::default(),
             prefs: rune::prefs::Prefs::memory(),
@@ -111,6 +113,9 @@ impl Default for State {
 
 impl State {
     fn open_settings(&mut self, tx: &mut Tx) {
+        if self.paste_confirmation.is_some() {
+            return;
+        }
         terminal_mouse::cancel(self);
         command_palette::close(self);
         self.dialog = None;
@@ -159,7 +164,10 @@ impl State {
 
     fn act(&mut self, action: Action, tx: &mut Tx) {
         let font_action = matches!(action, Action::IncreaseFontSize | Action::DecreaseFontSize);
-        if !font_action && (self.settings_open || self.dialog.is_some() || self.palette.is_open()) {
+        if self.paste_confirmation.is_some()
+            || (!font_action
+                && (self.settings_open || self.dialog.is_some() || self.palette.is_open()))
+        {
             return;
         }
         match action {
@@ -476,7 +484,12 @@ impl State {
     /// Focusing a terminal acknowledges only the notifications actually observed
     /// in that pane. Keep generation/revision guards so a newer result survives.
     fn acknowledge_focused_agents(&mut self) {
-        if !self.ready() || self.settings_open || self.dialog.is_some() || self.palette.is_open() {
+        if !self.ready()
+            || self.settings_open
+            || self.dialog.is_some()
+            || self.paste_confirmation.is_some()
+            || self.palette.is_open()
+        {
             return;
         }
         let Some(id) = self.active_terminal() else {
@@ -503,7 +516,7 @@ impl State {
 
     fn change(&mut self, command: Command) {
         self.prefix_waiting = false;
-        if !self.ready() {
+        if !self.ready() || self.paste_confirmation.is_some() {
             return;
         }
         if matches!(&command, Command::SelectTerminal { terminal_id } if Some(*terminal_id) == self.active_terminal())
@@ -536,6 +549,7 @@ impl State {
         // A click may race a previously queued screen. Never type into the old tab.
         if self.settings_open
             || self.dialog.is_some()
+            || self.paste_confirmation.is_some()
             || self.palette.is_open()
             || self.pending.is_some()
             || self.offline
@@ -551,7 +565,7 @@ impl State {
             return true;
         }
         if bytes.len() > griz_protocol::MAX_INPUT {
-            self.notice = Some("Input rejected: paste limit is 256 KiB".into());
+            self.notice = Some("Input rejected: limit is 256 KiB".into());
             return true;
         }
         let had_selection = self.terminal_mouse.selection.take().is_some();
@@ -565,6 +579,86 @@ impl State {
                 || had_selection;
         }
         false
+    }
+
+    fn request_paste(&mut self, text: &str) -> bool {
+        if self.settings_open
+            || self.dialog.is_some()
+            || self.paste_confirmation.is_some()
+            || self.palette.is_open()
+            || self.pending.is_some()
+            || self.offline
+        {
+            return false;
+        }
+        if !self.online {
+            self.notice = Some("Not connected. Click Reconnect.".into());
+            return true;
+        }
+        if self.shell_exited() {
+            self.notice = Some("Shell has exited. Click Start new shell above.".into());
+            return true;
+        }
+        if text.len() > griz_protocol::MAX_INPUT {
+            self.notice = Some("Paste rejected: limit is 256 KiB of UTF-8 text".into());
+            return true;
+        }
+        let had_selection = self.terminal_mouse.selection.take().is_some();
+        if let Some(terminal_id) = self.active_terminal() {
+            return self
+                .send(Command::Paste {
+                    terminal_id,
+                    text: text.to_owned(),
+                })
+                .is_none()
+                || had_selection;
+        }
+        false
+    }
+
+    fn paste_confirmation_current(&self, confirmation: client::PasteConfirmation) -> bool {
+        self.ready()
+            && self.active_terminal() == Some(confirmation.terminal_id)
+            && self
+                .pane_frame(confirmation.terminal_id)
+                .is_some_and(|frame| {
+                    frame.shell_pid == confirmation.shell_pid && frame.exited.is_none()
+                })
+    }
+
+    fn show_paste_confirmation(&mut self, confirmation: client::PasteConfirmation) {
+        if !self.paste_confirmation_current(confirmation)
+            || self.settings_open
+            || self.dialog.is_some()
+            || self.palette.is_open()
+        {
+            self.send(Command::CancelPaste {
+                paste_id: confirmation.paste_id,
+            });
+            return;
+        }
+        terminal_mouse::cancel(self);
+        self.prefix_waiting = false;
+        self.preedit.clear();
+        self.paste_confirmation = Some(confirmation);
+    }
+
+    fn confirm_paste(&mut self) {
+        let Some(confirmation) = self.paste_confirmation.take() else {
+            return;
+        };
+        self.send(Command::ConfirmPaste {
+            paste_id: confirmation.paste_id,
+        });
+    }
+
+    fn cancel_paste(&mut self) {
+        let Some(confirmation) = self.paste_confirmation.take() else {
+            return;
+        };
+        self.send(Command::CancelPaste {
+            paste_id: confirmation.paste_id,
+        });
     }
 
     fn apply(&mut self, snapshot: ViewState) {
@@ -632,6 +726,12 @@ impl State {
             })
         });
         self.snapshot = Some(snapshot);
+        if self
+            .paste_confirmation
+            .is_some_and(|confirmation| !self.paste_confirmation_current(confirmation))
+        {
+            self.paste_confirmation = None;
+        }
         panes::reconcile(self);
         terminal_mouse::reconcile(self);
         if self.shell_exited() || old_terminal != self.active_terminal() {
@@ -691,7 +791,12 @@ impl State {
     }
 
     fn request_close_terminal(&mut self, id: TerminalId, tx: &mut Tx) {
-        if !self.ready() || self.settings_open || self.dialog.is_some() || self.palette.is_open() {
+        if !self.ready()
+            || self.settings_open
+            || self.dialog.is_some()
+            || self.paste_confirmation.is_some()
+            || self.palette.is_open()
+        {
             return;
         }
         let Some(workspace) = self.snapshot.as_ref().and_then(|s| {
@@ -712,7 +817,7 @@ impl State {
     }
 
     fn open_dialog(&mut self, dialog: Dialog, tx: &mut Tx) {
-        if self.settings_open || !self.ready() {
+        if self.settings_open || self.paste_confirmation.is_some() || !self.ready() {
             return;
         }
         let value = match &dialog {
@@ -774,17 +879,25 @@ fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
     let Some(client) = &state.client else {
         return toast_changed;
     };
-    let (snapshot, error, disconnected) = {
+    let (snapshot, paste_confirmation, error, disconnected) = {
         let mut inbox = client.inbox.lock().unwrap();
         (
             inbox.view.take(),
+            inbox.paste_confirmation.take(),
             inbox.error.take(),
             std::mem::take(&mut inbox.disconnected),
         )
     };
-    let changed = toast_changed || snapshot.is_some() || error.is_some() || disconnected;
+    let changed = toast_changed
+        || snapshot.is_some()
+        || paste_confirmation.is_some()
+        || error.is_some()
+        || disconnected;
     if let Some(snapshot) = snapshot {
         state.apply(snapshot);
+    }
+    if let Some(confirmation) = paste_confirmation {
+        state.show_paste_confirmation(confirmation);
     }
     if let Some(error) = error {
         state.notice = Some(error);
@@ -795,6 +908,7 @@ fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
             state.dialog = None;
         }
         state.prefix_waiting = false;
+        state.paste_confirmation = None;
         state.online = false;
         state.pending = None;
         state.preedit.clear();
@@ -835,6 +949,7 @@ fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if state.settings_open
         || state.dialog.is_some()
+        || state.paste_confirmation.is_some()
         || state.palette.is_open()
         || !terminal_focus(state, tx)
     {
@@ -871,6 +986,7 @@ fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     } else if terminal_focus(state, tx)
         && !state.settings_open
         && state.dialog.is_none()
+        && state.paste_confirmation.is_none()
         && !state.palette.is_open()
         && state
             .settings
@@ -888,7 +1004,11 @@ fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     }
     for action in [Action::QuickOpen, Action::CommandPalette] {
         if state.settings.matches(action, event, tx) {
-            if !tx.key_repeat() && !state.settings_open && state.dialog.is_none() {
+            if !tx.key_repeat()
+                && !state.settings_open
+                && state.dialog.is_none()
+                && state.paste_confirmation.is_none()
+            {
                 command_palette::open(state, action, tx);
             }
             return true;
@@ -908,7 +1028,11 @@ fn app_shortcut(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
             return true;
         }
     }
-    if state.settings_open || state.dialog.is_some() || state.palette.is_open() {
+    if state.settings_open
+        || state.dialog.is_some()
+        || state.paste_confirmation.is_some()
+        || state.palette.is_open()
+    {
         return false;
     }
     if terminal_focus(state, tx) {
@@ -931,7 +1055,11 @@ fn terminal_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if app_shortcut(state, event, tx) {
         return true;
     }
-    if state.settings_open || state.dialog.is_some() || state.palette.is_open() {
+    if state.settings_open
+        || state.dialog.is_some()
+        || state.paste_confirmation.is_some()
+        || state.palette.is_open()
+    {
         return false;
     }
     if (rune::Chord::parse("mod+c").unwrap().matches_tx(event, tx)
@@ -959,6 +1087,9 @@ fn terminal_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
 }
 
 fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    if state.paste_confirmation.is_some() {
+        return true;
+    }
     if panes::gesture_key(state, event) {
         return true;
     }
@@ -976,6 +1107,7 @@ fn on_ime(state: &mut State, event: &Ime, tx: &mut Tx) -> bool {
     }
     if state.settings_open
         || state.dialog.is_some()
+        || state.paste_confirmation.is_some()
         || state.palette.is_open()
         || !terminal_focus(state, tx)
     {

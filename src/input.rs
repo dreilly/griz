@@ -82,19 +82,6 @@ pub fn encode(event: &KeyEvent, application_cursor: bool) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-pub fn paste(text: &str, bracketed: bool) -> Vec<u8> {
-    // Don't allow clipboard text to terminate bracketed paste or inject escape sequences.
-    let text = text
-        .replace('\x1b', "")
-        .replace("\r\n", "\n")
-        .replace('\r', "\n");
-    if bracketed {
-        format!("\x1b[200~{text}\x1b[201~").into_bytes()
-    } else {
-        text.replace('\n', "\r").into_bytes()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,10 +137,5 @@ mod tests {
             },
         };
         assert_eq!(encode(&event, false), None);
-    }
-
-    #[test]
-    fn bracketed_paste_cannot_be_escaped_by_clipboard_contents() {
-        assert_eq!(paste("a\r\nb\x1b", true), b"\x1b[200~a\nb\x1b[201~");
     }
 }

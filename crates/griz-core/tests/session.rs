@@ -24,6 +24,8 @@ mod mouse;
 mod moves;
 #[path = "session/naming.rs"]
 mod naming;
+#[path = "session/paste.rs"]
+mod paste;
 #[path = "session/previews.rs"]
 mod previews;
 #[path = "session/scrollback.rs"]

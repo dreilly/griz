@@ -1,6 +1,7 @@
 //! The GUI never owns a PTY or emulator. It only attaches to the local service.
 use griz_protocol::{
-    Command as CoreCommand, Event, Request, ViewState, WorkspaceAccent, receive, send, socket_path,
+    Command as CoreCommand, Event, Request, TerminalId, ViewState, WorkspaceAccent, receive, send,
+    socket_path,
 };
 use rune::Waker;
 use std::fs::OpenOptions;
@@ -17,9 +18,20 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PasteConfirmation {
+    pub serial: u64,
+    pub paste_id: u64,
+    pub terminal_id: TerminalId,
+    pub shell_pid: u32,
+    pub byte_count: u32,
+    pub line_count: u32,
+}
+
 #[derive(Default)]
 pub struct Inbox {
     pub view: Option<ViewState>,
+    pub paste_confirmation: Option<PasteConfirmation>,
     pub error: Option<String>,
     pub disconnected: bool,
 }
@@ -95,6 +107,29 @@ impl Client {
                     match event {
                         Event::Error { message, .. } => inbox.error = Some(message),
                         Event::View { state } => inbox.view = Some(state),
+                        Event::PasteConfirmationRequired {
+                            serial,
+                            paste_id,
+                            terminal_id,
+                            shell_pid,
+                            byte_count,
+                            line_count,
+                        } => {
+                            let confirmation = PasteConfirmation {
+                                serial,
+                                paste_id,
+                                terminal_id,
+                                shell_pid,
+                                byte_count,
+                                line_count,
+                            };
+                            if inbox
+                                .paste_confirmation
+                                .is_none_or(|old| old.serial <= serial)
+                            {
+                                inbox.paste_confirmation = Some(confirmation);
+                            }
+                        }
                         Event::Stopping => {
                             inbox.error = Some("Core is stopping".into());
                             inbox.disconnected = true;
