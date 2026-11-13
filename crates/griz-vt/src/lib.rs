@@ -40,6 +40,7 @@ struct GrizVtCell {
     text_offset: usize,
     text_len: usize,
     width: u8,
+    wide_spacer_head: u8,
     fg: [u8; 3],
     bg: [u8; 3],
     flags: u8,
@@ -62,6 +63,8 @@ struct GrizVtSnapshot {
     bracketed_paste: u8,
     mouse_tracking: u8,
     scrollback_offset: u64,
+    row_soft_wrapped: *mut u8,
+    row_soft_wrapped_len: usize,
     cells: *mut GrizVtCell,
     cells_len: usize,
     text: *mut u8,
@@ -515,6 +518,8 @@ impl Snapshot {
         let snapshot = unsafe { self.0.as_ref() };
         let expected_cells = usize::from(snapshot.cols) * usize::from(snapshot.rows);
         if snapshot.cells_len != expected_cells
+            || snapshot.row_soft_wrapped_len != usize::from(snapshot.rows)
+            || (snapshot.row_soft_wrapped_len != 0 && snapshot.row_soft_wrapped.is_null())
             || (snapshot.cells_len != 0 && snapshot.cells.is_null())
             || (snapshot.text_len != 0 && snapshot.text.is_null())
             || (snapshot.title_len != 0 && snapshot.title.is_null())
@@ -525,6 +530,15 @@ impl Snapshot {
             });
         }
 
+        let row_soft_wrapped = if snapshot.row_soft_wrapped_len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: validated above; the C snapshot owns one byte per visible row.
+            let raw = unsafe {
+                slice::from_raw_parts(snapshot.row_soft_wrapped, snapshot.row_soft_wrapped_len)
+            };
+            raw.iter().map(|wrapped| *wrapped != 0).collect()
+        };
         let raw_cells = if snapshot.cells_len == 0 {
             &[][..]
         } else {
@@ -559,6 +573,7 @@ impl Snapshot {
                 decoded_row.push(Cell {
                     text: String::from_utf8_lossy(cell_text).into_owned(),
                     width: cell.width,
+                    wide_spacer_head: cell.wide_spacer_head != 0,
                     fg: cell.fg,
                     bg: cell.bg,
                     bold: cell.flags & CELL_BOLD != 0,
@@ -586,6 +601,7 @@ impl Snapshot {
             cols: snapshot.cols,
             rows: snapshot.rows,
             cells,
+            row_soft_wrapped,
             cursor_x: snapshot.cursor_x,
             cursor_y: snapshot.cursor_y,
             cursor_visible: snapshot.cursor_visible != 0,
@@ -986,6 +1002,65 @@ mod tests {
         assert_eq!(screen.cells[0][2].text, "");
         assert_eq!(screen.cells[0][2].width, 0);
         assert_eq!(screen.cells[0][3].text, "e\u{301}");
+    }
+
+    #[test]
+    fn row_metadata_distinguishes_chunked_soft_wraps_from_hard_breaks() {
+        let mut terminal = Terminal::new(4, 3).unwrap();
+        terminal.write(b"ab");
+        terminal.write(b"cd");
+        assert!(!terminal.screen().unwrap().is_row_soft_wrapped(0));
+
+        terminal.write(b"e");
+        let wrapped = terminal.screen().unwrap();
+        assert_eq!(wrapped.row_soft_wrapped.as_slice(), &[true, false, false]);
+        assert_eq!(wrapped.cells[1][0].text, "e");
+
+        terminal.write(b"\r\nz");
+        let hard = terminal.screen().unwrap();
+        assert!(hard.is_row_soft_wrapped(0));
+        assert!(!hard.is_row_soft_wrapped(1));
+        assert_eq!(hard.cells[2][0].text, "z");
+    }
+
+    #[test]
+    fn wide_glyph_at_the_right_edge_exports_a_non_text_spacer_head() {
+        let mut terminal = Terminal::new(4, 2).unwrap();
+        terminal.write("abc界Z".as_bytes());
+
+        let screen = terminal.screen().unwrap();
+        assert!(screen.is_row_soft_wrapped(0));
+        assert!(screen.cells[0][3].wide_spacer_head);
+        assert!(screen.cells[0][3].text.is_empty());
+        assert_eq!(screen.cells[1][0].text, "界");
+        assert_eq!(screen.cells[1][0].width, 2);
+        assert_eq!(screen.cells[1][1].width, 0);
+        assert_eq!(screen.cells[1][2].text, "Z");
+    }
+
+    #[test]
+    fn resize_reflow_recomputes_soft_wrap_rows() {
+        let mut terminal = Terminal::new(6, 4).unwrap();
+        terminal.write(b"abcdefghij\r\nXY");
+        assert_eq!(
+            terminal.screen().unwrap().row_soft_wrapped.as_slice(),
+            &[true, false, false, false]
+        );
+
+        terminal.resize(4, 4).unwrap();
+        let screen = terminal.screen().unwrap();
+        assert_eq!(
+            screen.row_soft_wrapped.as_slice(),
+            &[true, true, false, false]
+        );
+        let text: String = screen
+            .cells
+            .iter()
+            .flat_map(|row| row.iter())
+            .filter(|cell| cell.width != 0 && !cell.wide_spacer_head)
+            .map(|cell| cell.text.as_str())
+            .collect();
+        assert!(text.contains("abcdefghijXY"));
     }
 
     #[test]

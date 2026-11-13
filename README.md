@@ -410,9 +410,11 @@ that Rune did not provide.
   Alternate-screen programs have no terminal history of their own.
 - Drag across terminal text to highlight it. Releasing the mouse automatically copies
   the selection and shows a **Copied to clipboard** toast near the bottom for two seconds.
-  Double-click selects a word; triple-click selects a visible line. Wide Unicode and
-  combining characters are copied intact. **⌘C** or **Ctrl+Shift+C** copies it again;
-  **Escape** clears the highlight without sending Escape to the shell.
+  Double-click selects a word; triple-click selects a visible line. Soft-wrapped
+  physical rows copy as one logical line while hard breaks and selected spaces are
+  retained. Wide Unicode and combining characters are copied intact. **⌘C** or
+  **Ctrl+Shift+C** copies it again; **Escape** clears the highlight without sending
+  Escape to the shell.
 - Programs that enable terminal mouse reporting receive primary/middle clicks and drags,
   pointer motion, secondary clicks, and wheel/trackpad scrolling. Encoding follows the
   program's current X10, UTF-8, SGR, URXVT, or SGR-pixel mode through libghostty.
@@ -540,8 +542,8 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 
 - No tab reordering/renaming, pane dragging across tabs/windows, or remote transport yet.
 - No draggable scrollback scrollbar, images, hyperlinks, complete native keyboard event fidelity,
-  or full font/glyph shaping. Selection covers the visible grid; copied multi-row text
-  uses newlines between visual rows (soft-wrapped logical lines are not yet distinguished).
+  or full font/glyph shaping. Selection covers only the visible grid; Ghostty-native
+  gesture semantics and history-spanning/autoscroll selection remain future work.
   Secondary clicks are reported as press/release pairs; right-button dragging is not yet exposed by Rune.
 - Fixed-cell monospace rendering, not Ghostty's full renderer; basic shell/TUI use is the target.
   SGR decorations use cell geometry; dashed, double-line, rounded, and diagonal box-drawing
@@ -579,8 +581,9 @@ tests cover both resize axes, nested dividers, minimum sizes, centered drag grip
 swap/edge drop previews, cancellation, topology changes, and input gating. Core move
 tests verify process preservation, directional reparenting, and invalid/stale targets.
 Mouse tests cover mode-specific encoding, real PTY routing, split-pane targeting,
-Unicode/reverse/multiline selection, copy-on-release and toast expiry, Shift override,
-copy shortcuts, cancellation, scrolling, and stale-screen/disconnected handling.
+Unicode/reverse/multiline and logical-line selection, selected spaces, wide-edge
+spacers, copy-on-release and toast expiry, Shift override, copy shortcuts,
+cancellation, scrolling, and stale-screen/disconnected handling.
 Navigation preview tests cover live hidden-pane output, subscription isolation,
 unchanged selection/dimensions, stale targets, dismissal, and fitted split miniatures.
 Agent tests cover native OSC 7501 negotiation/DA ordering, arbitrary PTY chunking,

@@ -41,6 +41,23 @@ fn scrollback_moves_both_directions_clamps_and_keeps_clients_independent() {
 }
 
 #[test]
+fn screen_at_preserves_soft_wrap_metadata_in_history() {
+    let mut vt = Terminal::new(4, 2).unwrap();
+    vt.write(b"abcdef\r\nhard\r\ntail");
+    let live = vt.screen().unwrap();
+    assert_eq!(row(&live, 0), "hard");
+    assert_eq!(row(&live, 1), "tail");
+    assert_eq!(live.row_soft_wrapped.as_slice(), &[false, false]);
+
+    let mut viewport = Viewport::default();
+    vt.scroll(&mut viewport, -2).unwrap();
+    let history = vt.screen_at(&viewport).unwrap();
+    assert_eq!(row(&history, 0), "abcd");
+    assert_eq!(row(&history, 1), "ef");
+    assert_eq!(history.row_soft_wrapped.as_slice(), &[true, false]);
+}
+
+#[test]
 fn history_stays_anchored_during_output_and_resize() {
     let mut vt = terminal();
     let mut viewport = Viewport::default();

@@ -17,6 +17,7 @@ struct GrizVtCell {
     size_t text_offset;
     size_t text_len;
     uint8_t width;
+    uint8_t wide_spacer_head;
     uint8_t fg[3];
     uint8_t bg[3];
     uint8_t flags;
@@ -38,6 +39,8 @@ struct GrizVtSnapshot {
     uint8_t bracketed_paste;
     uint8_t mouse_tracking;
     uint64_t scrollback_offset;
+    uint8_t* row_soft_wrapped;
+    size_t row_soft_wrapped_len;
     struct GrizVtCell* cells;
     size_t cells_len;
     uint8_t* text;
@@ -889,6 +892,7 @@ static int griz_fill_cell(
     out->width = wide == GHOSTTY_CELL_WIDE_WIDE
         ? 2
         : (wide == GHOSTTY_CELL_WIDE_SPACER_TAIL ? 0 : 1);
+    out->wide_spacer_head = wide == GHOSTTY_CELL_WIDE_SPACER_HEAD ? 1 : 0;
     out->flags = 0;
     if ((style.flags & GHOSTTY_STYLE_FLAG_BOLD) != 0) {
         out->flags |= GRIZ_CELL_BOLD;
@@ -924,6 +928,7 @@ void griz_vt_snapshot_free(struct GrizVtSnapshot* snapshot) {
     if (snapshot == NULL) {
         return;
     }
+    free(snapshot->row_soft_wrapped);
     free(snapshot->cells);
     free(snapshot->text);
     free(snapshot->title);
@@ -1049,6 +1054,16 @@ int griz_vt_snapshot(struct GrizVt* vt, struct GrizVtSnapshot** out) {
         snapshot->title_len = title.len;
     }
 
+    snapshot->row_soft_wrapped_len = snapshot->rows;
+    snapshot->row_soft_wrapped = calloc(
+        snapshot->row_soft_wrapped_len,
+        sizeof(*snapshot->row_soft_wrapped)
+    );
+    if (snapshot->row_soft_wrapped == NULL && snapshot->row_soft_wrapped_len != 0) {
+        result = GHOSTTY_OUT_OF_MEMORY;
+        goto fail;
+    }
+
     snapshot->cells_len = (size_t)snapshot->cols * (size_t)snapshot->rows;
     snapshot->cells = calloc(snapshot->cells_len, sizeof(*snapshot->cells));
     if (snapshot->cells == NULL && snapshot->cells_len != 0) {
@@ -1084,6 +1099,23 @@ int griz_vt_snapshot(struct GrizVt* vt, struct GrizVtSnapshot** out) {
         if (y < 0 || y >= snapshot->rows) {
             continue;
         }
+
+        GhosttyRow row;
+        bool soft_wrapped = false;
+        result = ghostty_render_state_row_get(
+            vt->row_iterator,
+            GHOSTTY_RENDER_STATE_ROW_DATA_RAW,
+            &row
+        );
+        if (result != GHOSTTY_SUCCESS) {
+            goto fail;
+        }
+        result = ghostty_row_get(row, GHOSTTY_ROW_DATA_WRAP, &soft_wrapped);
+        if (result != GHOSTTY_SUCCESS) {
+            goto fail;
+        }
+        snapshot->row_soft_wrapped[y] = soft_wrapped ? 1 : 0;
+
         result = ghostty_render_state_row_get(
             vt->row_iterator,
             GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,

@@ -99,11 +99,18 @@ impl UnderlineStyle {
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Cell {
     pub text: String,
     /// Display columns: 0 for the continuation of a wide glyph, otherwise 1 or 2.
     pub width: u8,
+    /// Ghostty's empty end-of-row placeholder when a wide glyph moves to the next row.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub wide_spacer_head: bool,
     pub fg: [u8; 3],
     pub bg: [u8; 3],
     pub bold: bool,
@@ -151,6 +158,8 @@ impl<'de> Deserialize<'de> for Cell {
         struct Wire {
             text: String,
             width: u8,
+            #[serde(default)]
+            wide_spacer_head: bool,
             fg: [u8; 3],
             bg: [u8; 3],
             bold: bool,
@@ -175,6 +184,7 @@ impl<'de> Deserialize<'de> for Cell {
         Ok(Self {
             text: wire.text,
             width: wire.width,
+            wide_spacer_head: wire.wide_spacer_head,
             fg: wire.fg,
             bg: wire.bg,
             bold: wire.bold,
@@ -345,6 +355,10 @@ pub struct Screen {
     pub cols: u16,
     pub rows: u16,
     pub cells: Vec<Vec<Cell>>,
+    /// Per-row flag indicating that the row continues onto the next physical row.
+    /// Missing entries from older saved frames are hard breaks.
+    #[serde(default)]
+    pub row_soft_wrapped: Vec<bool>,
     pub cursor_x: u16,
     pub cursor_y: u16,
     pub cursor_visible: bool,
@@ -364,6 +378,12 @@ pub struct Screen {
     /// Rows between this client's viewport and the live terminal area.
     #[serde(default)]
     pub scrollback_offset: u64,
+}
+
+impl Screen {
+    pub fn is_row_soft_wrapped(&self, row: usize) -> bool {
+        self.row_soft_wrapped.get(row).copied().unwrap_or(false)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -642,6 +662,8 @@ pub enum Command {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// Keep the complete view state direct in this wire enum; framing already owns the event value.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     Stopping,
     View {
@@ -740,6 +762,7 @@ mod tests {
         let cell = Cell {
             text: "界".into(),
             width: 2,
+            wide_spacer_head: false,
             fg: [1, 2, 3],
             bg: [4, 5, 6],
             bold: true,
@@ -756,6 +779,16 @@ mod tests {
         assert_eq!(value["underline"], "curly");
         assert_eq!(value["underline_color"], serde_json::json!([7, 8, 9]));
         assert_eq!(serde_json::from_value::<Cell>(value).unwrap(), cell);
+        let mut spacer = cell.clone();
+        spacer.text.clear();
+        spacer.width = 1;
+        spacer.wide_spacer_head = true;
+        let spacer_value = serde_json::to_value(&spacer).unwrap();
+        assert_eq!(spacer_value["wide_spacer_head"], true);
+        assert_eq!(
+            serde_json::from_value::<Cell>(spacer_value).unwrap(),
+            spacer
+        );
         let mut bytes = Vec::new();
         send(&mut bytes, &cell).unwrap();
         assert_eq!(receive::<Cell>(&mut bytes.as_slice()).unwrap(), cell);
@@ -773,6 +806,7 @@ mod tests {
         assert_eq!(legacy.underline, UnderlineStyle::Single);
         assert_eq!(legacy.underline_color, legacy.fg);
         assert!(!legacy.faint && !legacy.blink && !legacy.concealed);
+        assert!(!legacy.wide_spacer_head);
     }
 
     #[test]
@@ -978,9 +1012,20 @@ mod tests {
         .unwrap();
         assert!(!screen.mouse_tracking);
         assert_eq!(screen.scrollback_offset, 0);
+        assert!(screen.row_soft_wrapped.is_empty());
+        assert!(!screen.is_row_soft_wrapped(0));
         assert_eq!(screen.cursor_shape, CursorShape::Block);
         assert!(!screen.cursor_blinking);
         assert_eq!(screen.cursor_color, None);
+
+        let mut wrapped = screen;
+        wrapped.row_soft_wrapped = vec![true];
+        let value = serde_json::to_value(&wrapped).unwrap();
+        assert_eq!(value["row_soft_wrapped"], serde_json::json!([true]));
+        assert_eq!(serde_json::from_value::<Screen>(value).unwrap(), wrapped);
+        let mut bytes = Vec::new();
+        send(&mut bytes, &wrapped).unwrap();
+        assert_eq!(receive::<Screen>(&mut bytes.as_slice()).unwrap(), wrapped);
         assert_eq!(
             serde_json::to_value(Command::Scroll {
                 terminal_id: 7,

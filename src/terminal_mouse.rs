@@ -158,29 +158,40 @@ impl Selection {
     }
 
     fn text(&self) -> String {
-        let mut lines = Vec::new();
-        for (row, cells) in self.screen.cells.iter().enumerate() {
-            if let Some((start, end)) = self.columns(row) {
-                let mut line = String::new();
-                for cell in &cells[start..end] {
-                    if cell.width != 0 {
-                        line.push_str(if cell.text.is_empty() {
-                            " "
-                        } else {
-                            &cell.text
-                        });
-                    }
+        let multiline = self.anchor / usize::from(self.screen.cols)
+            != self.head / usize::from(self.screen.cols);
+        let selected: Vec<_> = self
+            .screen
+            .cells
+            .iter()
+            .enumerate()
+            .filter_map(|(row, cells)| self.columns(row).map(|columns| (row, cells, columns)))
+            .collect();
+        let mut text = String::new();
+        for (index, (row, cells, (start, end))) in selected.iter().enumerate() {
+            let trim_padding =
+                *end == cells.len() && (multiline || !matches!(self.unit, Unit::Character));
+            let mut pending_empty = 0;
+            for cell in &cells[*start..*end] {
+                if cell.width == 0 || cell.wide_spacer_head {
+                    continue;
                 }
-                // Strip terminal padding at the right edge, not deliberately selected spaces.
-                let multiline = self.anchor / usize::from(self.screen.cols)
-                    != self.head / usize::from(self.screen.cols);
-                if end == cells.len() && (multiline || !matches!(self.unit, Unit::Character)) {
-                    line.truncate(line.trim_end_matches(' ').len());
+                if cell.text.is_empty() {
+                    pending_empty += usize::from(cell.width.max(1));
+                } else {
+                    text.extend(std::iter::repeat_n(' ', pending_empty));
+                    pending_empty = 0;
+                    text.push_str(&cell.text);
                 }
-                lines.push(line);
+            }
+            if !trim_padding {
+                text.extend(std::iter::repeat_n(' ', pending_empty));
+            }
+            if index + 1 < selected.len() && !self.screen.is_row_soft_wrapped(*row) {
+                text.push('\n');
             }
         }
-        lines.join("\n")
+        text
     }
 }
 
@@ -479,6 +490,10 @@ pub fn reconcile(state: &mut State) {
                 frame.screen.cols == selection.screen.cols
                     && frame.screen.rows == selection.screen.rows
                     && frame.screen.cells == selection.screen.cells
+                    && (0..usize::from(frame.screen.rows)).all(|row| {
+                        frame.screen.is_row_soft_wrapped(row)
+                            == selection.screen.is_row_soft_wrapped(row)
+                    })
             })
         });
     if !valid {

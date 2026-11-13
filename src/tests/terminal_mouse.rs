@@ -15,9 +15,14 @@ impl Clipboard {
     }
 }
 
-fn setup(text: &str, tracking: bool) -> (Runtime<State>, Receiver<Request>, Clipboard) {
+fn setup_with_size(
+    text: &str,
+    tracking: bool,
+    cols: u16,
+    rows: u16,
+) -> (Runtime<State>, Receiver<Request>, Clipboard) {
     let (mut state, outgoing) = mock();
-    let mut vt = griz_vt::Terminal::new(80, 24).unwrap();
+    let mut vt = griz_vt::Terminal::new(cols, rows).unwrap();
     vt.write(text.as_bytes());
     if tracking {
         vt.write(b"\x1b[?1003h\x1b[?1006h");
@@ -31,6 +36,10 @@ fn setup(text: &str, tracking: bool) -> (Runtime<State>, Receiver<Request>, Clip
     rt.frame(0.0);
     commands(&outgoing);
     (rt, outgoing, Clipboard(clipboard))
+}
+
+fn setup(text: &str, tracking: bool) -> (Runtime<State>, Receiver<Request>, Clipboard) {
+    setup_with_size(text, tracking, 80, 24)
 }
 
 fn point(rt: &Runtime<State>, key: &str, col: f32, row: f32) -> (f32, f32) {
@@ -212,9 +221,52 @@ fn single_click_does_not_copy_and_reverse_multiline_selection_preserves_unicode(
     assert!(rt.find("clipboard-toast").is_none());
     let end = point(&rt, "terminal", 6.0, 1.5);
     select(&mut rt, end, start);
-    assert_eq!(clipboard.text(), "A界e\u{301}\nsecond");
+    assert_eq!(clipboard.text(), "A界e\u{301}  \nsecond");
     assert!(rt.find("terminal-selection-1").is_some());
     assert!(commands(&outgoing).is_empty());
+}
+
+#[test]
+fn soft_wrapped_multiline_selection_joins_logical_lines_forward_and_reverse() {
+    for reverse in [false, true] {
+        let (mut rt, outgoing, clipboard) = setup_with_size("abcdefg\r\nxy", false, 5, 3);
+        let start = point(&rt, "terminal", 0.0, 0.5);
+        let end = point(&rt, "terminal", 2.0, 2.5);
+        if reverse {
+            select(&mut rt, end, start);
+        } else {
+            select(&mut rt, start, end);
+        }
+        assert_eq!(clipboard.text(), "abcdefg\nxy");
+        assert!(commands(&outgoing).is_empty());
+    }
+}
+
+#[test]
+fn partial_soft_wrap_selection_does_not_insert_a_false_newline() {
+    let (mut rt, _, clipboard) = setup_with_size("abcdefg", false, 5, 2);
+    let start = point(&rt, "terminal", 2.0, 0.5);
+    let end = point(&rt, "terminal", 1.0, 1.5);
+    select(&mut rt, start, end);
+    assert_eq!(clipboard.text(), "cdef");
+}
+
+#[test]
+fn hard_break_copy_keeps_selected_trailing_spaces_but_not_grid_padding() {
+    let (mut rt, _, clipboard) = setup_with_size("ab  \r\nx", false, 5, 2);
+    let start = point(&rt, "terminal", 0.0, 0.5);
+    let end = point(&rt, "terminal", 1.0, 1.5);
+    select(&mut rt, start, end);
+    assert_eq!(clipboard.text(), "ab  \nx");
+}
+
+#[test]
+fn wide_glyph_wrapping_at_the_edge_copies_no_synthetic_spacer() {
+    let (mut rt, _, clipboard) = setup_with_size("abc界Z", false, 4, 2);
+    let start = point(&rt, "terminal", 0.0, 0.5);
+    let end = point(&rt, "terminal", 3.0, 1.5);
+    select(&mut rt, start, end);
+    assert_eq!(clipboard.text(), "abc界Z");
 }
 
 #[test]
@@ -334,6 +386,26 @@ fn selection_is_cleared_by_output_resize_typing_escape_and_navigation() {
             );
         }
     }
+}
+
+#[test]
+fn changed_wrap_metadata_invalidates_the_frozen_selection_snapshot() {
+    let (mut rt, _, clipboard) = setup_with_size("abcdef", false, 5, 2);
+    clipboard.set("old");
+    let start = point(&rt, "terminal", 0.0, 0.5);
+    let end = point(&rt, "terminal", 1.0, 1.5);
+    rt.pointer_down(start.0, start.1);
+    rt.pointer_move(end.0, end.1);
+    rt.frame(0.0);
+    rt.update(|state, _| {
+        let mut view = state.snapshot.clone().unwrap();
+        view.terminal.as_mut().unwrap().screen.row_soft_wrapped[0] = false;
+        state.apply(view);
+    });
+    rt.pointer_up(end.0, end.1);
+    rt.frame(0.0);
+    assert_eq!(clipboard.text(), "old");
+    assert!(rt.find("terminal-selection-0").is_none());
 }
 
 #[test]

@@ -120,19 +120,21 @@ not invent release events. Native dispatch usually supplies a physical code; scr
 state, so those Ghostty event fields stay unset. Applications requesting Kitty release
 or modifier-only streams will not receive events Griz cannot observe.
 
-### 5. Preserve logical lines when copying
+### 5. Preserve logical lines when copying — addressed for the visible grid
 
-**Confirmed:** `src/terminal_mouse.rs` copies a visible `Screen`, implements its
-own word/line selection, and joins physical rows with newlines. Protocol `Screen`
-has no wrap metadata. Soft-wrapped text acquires false newlines; selection cannot
-extend through history beyond the captured viewport.
+Ghostty row wrap state now crosses the C/Rust snapshot and protocol `Screen` for
+both live and scrolled captures. Client-local copying omits separators across
+soft-wrapped physical rows, retains hard breaks and explicitly selected spaces,
+and excludes Ghostty's wide-glyph spacer head. Unicode graphemes, wide
+continuations, reverse/partial selections, reflowed rows, and frozen selection
+snapshots retain their existing visible-grid behavior. Older saved frames without
+row metadata safely treat every row boundary as hard.
 
-**Ghostty support:** Row wrap state (`screen.h`), native selection/gesture APIs
-(`selection.h`), and formatter unwrapping/trimming (`formatter.h`).
-
-**Suggested scope:** Prefer core-owned selection endpoints and Ghostty formatter
-output, or first export wrap metadata to fix copying. Later add history
-selection/autoscroll and semantic command-output selection.
+**Remaining backlog:** Selection still covers only the captured visible grid and
+uses Griz's existing click/word/triple-line gestures. Moving endpoints and gesture
+semantics to Ghostty, selecting across history with autoscroll, and semantic
+command-output selection remain separate work using `selection.h` and
+`formatter.h`.
 
 ### 6. Configure a deliberate scrollback budget
 
