@@ -629,6 +629,8 @@ int griz_vt_key_input(
     struct GrizVt* vt,
     uint8_t action,
     uint16_t key,
+    uint32_t unshifted_codepoint,
+    uint8_t consumed_alt,
     const uint8_t* text,
     size_t text_len,
     uint8_t shift,
@@ -685,6 +687,15 @@ int griz_vt_key_input(
     result = ghostty_key_event_set_consumed_mods(vt->key_event, 0);
     if (result != GHOSTTY_SUCCESS) return result;
     result = ghostty_key_event_set_composing(vt->key_event, false);
+    if (result != GHOSTTY_SUCCESS) return result;
+    // Griz's macOS Option policy treats generated Unicode as text, not Meta.
+    // Keep that consumed modifier out of Kitty's shortcut identity as well.
+    if (consumed_alt) {
+        result = ghostty_key_event_set_consumed_mods(vt->key_event, GHOSTTY_MODS_ALT);
+        if (result != GHOSTTY_SUCCESS) return result;
+    }
+    // Reset this on every event: the event handle is reused, including for named keys.
+    result = ghostty_key_event_set_unshifted_codepoint(vt->key_event, unshifted_codepoint);
     if (result != GHOSTTY_SUCCESS) return result;
     GhosttyString utf8 = {.ptr = text, .len = text_len};
     result = ghostty_key_event_set_utf8(vt->key_event, utf8);

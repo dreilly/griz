@@ -6,6 +6,7 @@ fn key(key: TerminalKey) -> KeyInput {
         action: KeyAction::Press,
         key,
         physical: None,
+        unshifted_codepoint: None,
         text: String::new(),
         modifiers: KeyModifiers::default(),
     }
@@ -44,6 +45,32 @@ fn structured_key_uses_the_selected_live_terminals_current_modes_without_resizin
         ),
         (80, 24),
         "key input must not reuse or alter client screen dimensions"
+    );
+}
+
+#[test]
+fn ctrl_v_reaches_the_pty_under_pi_kitty_keyboard_flags() {
+    let service = Service::start();
+    let mut stream = service.attach(80, 24);
+    let terminal_id = next_view(&mut stream).active_terminal.unwrap();
+    input(
+        &mut stream,
+        1,
+        terminal_id,
+        b"printf '\\033[>7u'; stty raw -echo; printf 'pi-paste-%s\\r\\n' ready; dd bs=1 count=8 2>/dev/null | od -An -tx1; printf '\\033[<u'; stty sane; printf '\\npi-paste-%s\\n' done\r",
+    );
+    until(&mut stream, |event| contains(event, "pi-paste-ready"));
+    let mut event = key(TerminalKey::Character);
+    event.text = "v".into();
+    event.physical = griz_protocol::PhysicalKey::new(41);
+    event.unshifted_codepoint = Some('v');
+    event.modifiers.ctrl = true;
+    command(&mut stream, 2, CoreCommand::Key { terminal_id, event });
+    let encoded = view(until(&mut stream, |event| contains(event, "pi-paste-done")));
+    let rendered = text(&encoded.terminal.unwrap().screen);
+    assert!(
+        rendered.contains("1b  5b  31  31  38  3b  35  75"),
+        "screen={rendered:?}"
     );
 }
 

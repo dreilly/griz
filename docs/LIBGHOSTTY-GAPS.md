@@ -92,9 +92,13 @@ the deadline; shell exit also ends a hold, and later holds can start normally.
 ### 4. Use Ghostty's keyboard encoder — addressed within Rune metadata limits
 
 Ordinary native keys now cross GUI → core as bounded structured events: logical
-key, optional Rune `Tx::physical_key`, press/repeat action, modifiers, and generated
-UTF-8 text. Core requires the addressed terminal to be that client's selected live
-shell, then the terminal-owned Ghostty encoder calls
+key, optional Rune `Tx::physical_key`, optional layout character from `Tx::key_base`,
+press/repeat action, modifiers, and generated UTF-8 text. The shim sets (and resets)
+Ghostty's unshifted codepoint on each event; omitting this made Ctrl+V arrive as a
+plain `v` under Pi's Kitty flags (7), disabling Pi's own clipboard-image attachment
+shortcut. Older/logical-only events fall back to a single logical character rather
+than a guessed US physical layout. Core requires the addressed terminal to be that
+client's selected live shell, then the terminal-owned Ghostty encoder calls
 `ghostty_key_encoder_set_from_terminal` immediately before every encoding. Cursor,
 keypad, DECBKM, alt-prefix, modifyOtherKeys, and Kitty flags therefore come from the
 live terminal rather than a stale `Screen` or a second escape-sequence parser.
@@ -105,7 +109,8 @@ Griz keeps its historical Shift+Enter CSI-u sequence only while neither Kitty fl
 nor modifyOtherKeys is negotiated. Once either keyboard mode is active, Ghostty's
 result is authoritative, including Kitty repeat event types. Native Command/platform shortcuts remain outside terminal input,
 and macOS Option-generated Unicode remains text rather than gaining an artificial
-Meta escape prefix.
+Meta escape prefix. For macOS Option-generated Unicode, Griz marks Alt consumed
+so adding the layout character does not turn composed text into a Kitty shortcut.
 
 IME commits still use bounded raw UTF-8 `Input`. An IME commit has composed text but
 no trustworthy native key identity/action, so Griz does not fabricate a Kitty

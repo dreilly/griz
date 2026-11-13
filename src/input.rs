@@ -54,6 +54,7 @@ pub fn key(event: &KeyEvent, tx: &Tx) -> Option<KeyInput> {
         },
         key,
         physical: tx.physical_key().and_then(physical_key),
+        unshifted_codepoint: tx.key_base(),
         text,
         modifiers: KeyModifiers {
             shift: modifiers.shift,

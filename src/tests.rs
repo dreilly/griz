@@ -486,6 +486,40 @@ fn native_command_shortcuts_never_leak_and_option_unicode_stays_structured_text(
 }
 
 #[test]
+fn ctrl_v_is_a_terminal_key_not_a_gui_paste_in_pi_keyboard_mode() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1000.0, 680.0));
+    click(&mut rt, "terminal");
+    commands(&outgoing);
+    rt.key(KeyEvent {
+        key: rune::Key::Text("v".into()),
+        mods: rune::Mods {
+            ctrl: true,
+            ..Default::default()
+        },
+    });
+    rt.frame(0.0);
+    let sent = commands(&outgoing);
+    let [
+        (
+            _,
+            Command::Key {
+                terminal_id: 1,
+                event,
+            },
+        ),
+    ] = sent.as_slice()
+    else {
+        panic!("Ctrl+V must reach Pi as a key, not terminal paste: {sent:?}");
+    };
+    assert!(event.modifiers.ctrl);
+    assert_eq!(event.text, "v");
+    let mut terminal = griz_vt::Terminal::new(80, 24).unwrap();
+    terminal.write(b"\x1b[>7u");
+    assert_eq!(terminal.key_input(event).unwrap(), b"\x1b[118;5u");
+}
+
+#[test]
 fn repeat_and_ime_use_distinct_structured_and_raw_paths_with_pending_gates() {
     let (mut state, outgoing) = mock();
     state.pending = Some(99);

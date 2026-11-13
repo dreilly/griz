@@ -136,6 +136,8 @@ unsafe extern "C" {
         vt: *mut GrizVt,
         action: u8,
         key: u16,
+        unshifted_codepoint: u32,
+        consumed_alt: u8,
         text: *const u8,
         text_len: usize,
         shift: u8,
@@ -401,6 +403,12 @@ impl Terminal {
                     KeyAction::Repeat => 1,
                 },
                 key,
+                unshifted_codepoint(event),
+                (cfg!(target_os = "macos")
+                    && event.modifiers.alt
+                    && !event.modifiers.ctrl
+                    && !event.text.is_ascii())
+                .into(),
                 event.text.as_ptr(),
                 event.text.len(),
                 event.modifiers.shift.into(),
@@ -695,6 +703,20 @@ fn logical_key(event: &KeyInput) -> u16 {
     }
 }
 
+fn unshifted_codepoint(event: &KeyInput) -> u32 {
+    if let Some(character) = event.unshifted_codepoint {
+        return u32::from(character);
+    }
+    // Older clients and logical-only/scripted events have no layout metadata. Use a
+    // single logical character, never a guessed US physical-key character. Without
+    // this field Ghostty's Kitty encoder treats even Ctrl+V as ordinary text.
+    let mut chars = event.text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(character), None) => u32::from(character.to_ascii_lowercase()),
+        _ => 0,
+    }
+}
+
 fn character_key(text: &str) -> u16 {
     let mut chars = text.chars();
     let Some(character) = chars.next() else {
@@ -761,6 +783,7 @@ mod tests {
             action: KeyAction::Press,
             key,
             physical: None,
+            unshifted_codepoint: None,
             text: text.into(),
             modifiers,
         }
@@ -829,6 +852,114 @@ mod tests {
             "å".as_bytes(),
             "macOS Option-generated Unicode must not gain an ESC prefix"
         );
+    }
+
+    #[test]
+    fn ctrl_v_reaches_pi_in_legacy_and_kitty_modes() {
+        for (mode, expected) in [
+            (b"".as_slice(), b"\x16".as_slice()),
+            (b"\x1b[>4;2m".as_slice(), b"\x1b[27;5;118~".as_slice()),
+            (b"\x1b[>7u".as_slice(), b"\x1b[118;5u".as_slice()),
+        ] {
+            for (physical, unshifted) in [
+                (None, None),
+                (PhysicalKey::new(41), Some('v')),
+                // Layout identity, not the US character at this physical location.
+                (PhysicalKey::new(47), Some('v')),
+            ] {
+                let mut terminal = Terminal::new(80, 24).unwrap();
+                terminal.write(mode);
+                let mut event = key(
+                    TerminalKey::Character,
+                    "v",
+                    KeyModifiers {
+                        ctrl: true,
+                        ..KeyModifiers::default()
+                    },
+                );
+                event.physical = physical;
+                event.unshifted_codepoint = unshifted;
+                let expected = if physical == PhysicalKey::new(47) && mode == b"\x1b[>7u" {
+                    b"\x1b[118::46;5u".as_slice()
+                } else {
+                    expected
+                };
+                assert_eq!(
+                    terminal.key_input(&event).unwrap(),
+                    expected,
+                    "physical={physical:?}, mode={mode:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kitty_character_modifiers_repeats_and_reused_named_events() {
+        let mut terminal = Terminal::new(80, 24).unwrap();
+        terminal.write(b"\x1b[>7u");
+        for character in ['a', 'c', 'v', 'w'] {
+            let mut event = key(
+                TerminalKey::Character,
+                &character.to_string(),
+                KeyModifiers {
+                    ctrl: true,
+                    ..KeyModifiers::default()
+                },
+            );
+            event.unshifted_codepoint = Some(character);
+            assert_eq!(
+                terminal.key_input(&event).unwrap(),
+                format!("\x1b[{};5u", u32::from(character)).as_bytes()
+            );
+            event.action = KeyAction::Repeat;
+            assert_eq!(
+                terminal.key_input(&event).unwrap(),
+                format!("\x1b[{};5:2u", u32::from(character)).as_bytes()
+            );
+        }
+        let mut shifted = key(
+            TerminalKey::Character,
+            "V",
+            KeyModifiers {
+                shift: true,
+                ctrl: true,
+                ..KeyModifiers::default()
+            },
+        );
+        shifted.unshifted_codepoint = Some('v');
+        assert_eq!(terminal.key_input(&shifted).unwrap(), b"\x1b[118:86;6u");
+        assert_eq!(
+            terminal
+                .key_input(&key(TerminalKey::Up, "", KeyModifiers::default()))
+                .unwrap(),
+            b"\x1b[1;1:1A"
+        );
+        assert_eq!(
+            terminal
+                .key_input(&key(TerminalKey::Character, "v", KeyModifiers::default()))
+                .unwrap(),
+            b"v"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn option_unicode_with_native_base_remains_text() {
+        for mode in [b"".as_slice(), b"\x1b[>7u".as_slice()] {
+            let mut terminal = Terminal::new(80, 24).unwrap();
+            terminal.write(mode);
+            let mut event = key(
+                TerminalKey::Character,
+                "å",
+                KeyModifiers {
+                    alt: true,
+                    ..KeyModifiers::default()
+                },
+            );
+            event.physical = PhysicalKey::new(20);
+            event.unshifted_codepoint = Some('a');
+            assert_eq!(terminal.key_input(&event).unwrap(), "å".as_bytes());
+        }
     }
 
     #[test]

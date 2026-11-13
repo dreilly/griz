@@ -309,6 +309,9 @@ pub struct KeyInput {
     pub action: KeyAction,
     pub key: TerminalKey,
     pub physical: Option<PhysicalKey>,
+    /// Character under the current layout with no modifiers, when supplied by the platform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unshifted_codepoint: Option<char>,
     pub text: String,
     pub modifiers: KeyModifiers,
 }
@@ -317,6 +320,12 @@ impl KeyInput {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.text.len() > MAX_KEY_TEXT {
             return Err("key text is too large");
+        }
+        if self
+            .unshifted_codepoint
+            .is_some_and(|c| c.is_control() || ('\u{f700}'..='\u{f8ff}').contains(&c))
+        {
+            return Err("unshifted codepoint is not a printable character");
         }
         if matches!(self.key, TerminalKey::Function { number: 0 | 25.. }) {
             return Err("function key is outside F1-F24");
@@ -815,6 +824,7 @@ mod tests {
             action: KeyAction::Repeat,
             key: TerminalKey::Function { number: 12 },
             physical: PhysicalKey::new(132),
+            unshifted_codepoint: None,
             text: String::new(),
             modifiers: KeyModifiers {
                 shift: true,
@@ -864,6 +874,30 @@ mod tests {
         oversized.key = TerminalKey::Character;
         oversized.text = "x".repeat(MAX_KEY_TEXT + 1);
         assert!(oversized.validate().is_err());
+    }
+
+    #[test]
+    fn key_layout_metadata_is_optional_and_validated() {
+        let wire = serde_json::json!({
+            "action": "press",
+            "key": {"type": "character"},
+            "physical": 41,
+            "text": "v",
+            "modifiers": {"shift": false, "alt": false, "ctrl": true, "super_key": false}
+        });
+        let mut event: KeyInput = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(event.unshifted_codepoint, None);
+        event.validate().unwrap();
+        event.unshifted_codepoint = Some('v');
+        let encoded = serde_json::to_value(&event).unwrap();
+        assert_eq!(encoded["unshifted_codepoint"], "v");
+        assert_eq!(serde_json::from_value::<KeyInput>(encoded).unwrap(), event);
+        event.unshifted_codepoint = Some('界');
+        event.validate().unwrap();
+        for invalid in ['\0', '\n', '\u{7f}', '\u{f700}'] {
+            event.unshifted_codepoint = Some(invalid);
+            assert!(event.validate().is_err());
+        }
     }
 
     #[test]
