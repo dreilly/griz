@@ -42,6 +42,10 @@ struct GrizVtSnapshot {
     cursor_x: u16,
     cursor_y: u16,
     cursor_visible: u8,
+    cursor_shape: u8,
+    cursor_blinking: u8,
+    cursor_color_has_value: u8,
+    cursor_color: [u8; 3],
     application_cursor: u8,
     bracketed_paste: u8,
     mouse_tracking: u8,
@@ -412,6 +416,14 @@ impl Snapshot {
             cursor_x: snapshot.cursor_x,
             cursor_y: snapshot.cursor_y,
             cursor_visible: snapshot.cursor_visible != 0,
+            cursor_shape: match snapshot.cursor_shape {
+                1 => griz_protocol::CursorShape::Bar,
+                2 => griz_protocol::CursorShape::Underline,
+                3 => griz_protocol::CursorShape::HollowBlock,
+                _ => griz_protocol::CursorShape::Block,
+            },
+            cursor_blinking: snapshot.cursor_blinking != 0,
+            cursor_color: (snapshot.cursor_color_has_value != 0).then_some(snapshot.cursor_color),
             title: String::from_utf8_lossy(title).into_owned(),
             application_cursor: snapshot.application_cursor != 0,
             bracketed_paste: snapshot.bracketed_paste != 0,
@@ -456,6 +468,57 @@ mod tests {
         assert_eq!(screen.cells[1][0].text, "B");
         assert_eq!((screen.cursor_x, screen.cursor_y), (3, 2));
         assert!(screen.cursor_visible);
+    }
+
+    #[test]
+    fn decscusr_cursor_shape_and_blinking_follow_application_requests() {
+        use griz_protocol::CursorShape::{Bar, Block, Underline};
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        let default = terminal.screen().unwrap();
+        assert_eq!(default.cursor_shape, Block);
+        for (parameter, shape, blinking) in [
+            (1, Block, true),
+            (2, Block, false),
+            (3, Underline, true),
+            (4, Underline, false),
+            (5, Bar, true),
+            (6, Bar, false),
+        ] {
+            terminal.write(format!("\x1b[{parameter} q").as_bytes());
+            let screen = terminal.screen().unwrap();
+            assert_eq!(screen.cursor_shape, shape, "DECSCUSR {parameter}");
+            assert_eq!(screen.cursor_blinking, blinking, "DECSCUSR {parameter}");
+        }
+        // Neovim normal -> insert -> normal switches need no printable output.
+        for (sequence, shape) in [
+            (b"\x1b[2 q", Block),
+            (b"\x1b[6 q", Bar),
+            (b"\x1b[2 q", Block),
+        ] {
+            terminal.write(sequence);
+            assert_eq!(terminal.screen().unwrap().cursor_shape, shape);
+        }
+        terminal.write(b"\x1b[0 q");
+        let reset = terminal.screen().unwrap();
+        assert_eq!(reset.cursor_shape, default.cursor_shape);
+        assert_eq!(reset.cursor_blinking, default.cursor_blinking);
+        terminal.write(b"\x1b[?25l");
+        assert!(!terminal.screen().unwrap().cursor_visible);
+        terminal.write(b"\x1b[?25h");
+        assert!(terminal.screen().unwrap().cursor_visible);
+    }
+
+    #[test]
+    fn osc_cursor_color_and_reset_are_exported() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        let default = terminal.screen().unwrap().cursor_color;
+        terminal.write(b"\x1b]12;#123456\x07");
+        assert_eq!(
+            terminal.screen().unwrap().cursor_color,
+            Some([0x12, 0x34, 0x56])
+        );
+        terminal.write(b"\x1b]112\x07");
+        assert_eq!(terminal.screen().unwrap().cursor_color, default);
     }
 
     #[test]

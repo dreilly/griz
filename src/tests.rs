@@ -26,6 +26,8 @@ mod prefix_bindings;
 mod settings_tests;
 #[path = "tests/splits.rs"]
 mod splits;
+#[path = "tests/terminal_cursor.rs"]
+mod terminal_cursor;
 #[path = "tests/terminal_graphics.rs"]
 mod terminal_graphics;
 #[path = "tests/terminal_mouse.rs"]

@@ -121,6 +121,17 @@ pub struct MouseInput {
     pub ctrl: bool,
 }
 
+/// Cursor geometry requested by the terminal application (DECSCUSR).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Bar,
+    Underline,
+    HollowBlock,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Screen {
     pub cols: u16,
@@ -129,6 +140,13 @@ pub struct Screen {
     pub cursor_x: u16,
     pub cursor_y: u16,
     pub cursor_visible: bool,
+    #[serde(default)]
+    pub cursor_shape: CursorShape,
+    #[serde(default)]
+    pub cursor_blinking: bool,
+    /// Explicit terminal cursor color (e.g. OSC 12), or the client's fallback.
+    #[serde(default)]
+    pub cursor_color: Option<[u8; 3]>,
     pub title: String,
     pub application_cursor: bool,
     pub bracketed_paste: bool,
@@ -585,6 +603,9 @@ mod tests {
         .unwrap();
         assert!(!screen.mouse_tracking);
         assert_eq!(screen.scrollback_offset, 0);
+        assert_eq!(screen.cursor_shape, CursorShape::Block);
+        assert!(!screen.cursor_blinking);
+        assert_eq!(screen.cursor_color, None);
         assert_eq!(
             serde_json::to_value(Command::Scroll {
                 terminal_id: 7,

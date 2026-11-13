@@ -3,7 +3,7 @@ use crate::{
     State,
     settings::{Settings, Theme},
 };
-use griz_protocol::{Screen, TerminalId};
+use griz_protocol::{Cell, CursorShape, Screen, TerminalId};
 use rune::{Color, Cursor, El, PointerButton, Span, TextStyle, el, text};
 
 mod graphics;
@@ -213,6 +213,30 @@ fn font(settings: &Settings, height: f32, bold: bool, italic: bool) -> TextStyle
     if italic { style.italic() } else { style }
 }
 
+/// Use the same glyph path for normal cells and the contrasting ink on a block cursor.
+fn cell_ink(cell: &Cell, settings: &Settings, width: f32, height: f32, ink: Color) -> (El, bool) {
+    if let Some(mut graphic) = graphics::cell(&cell.text, width, height, ink) {
+        if cell.underline {
+            let thickness = (settings.font_size / 14.0).min(height);
+            graphic = graphic.child(
+                el().key("terminal-graphic-underline")
+                    .size(width, thickness)
+                    .fill(ink)
+                    .absolute(0.0, height - thickness),
+            );
+        }
+        return (graphic, true);
+    }
+    let mut glyph = text(cell.text.clone())
+        .font(font(settings, height, cell.bold, cell.italic))
+        .color(ink)
+        .size(width, height);
+    if cell.underline {
+        glyph = glyph.spans(vec![Span::new(0, cell.text.len()).underline(ink)]);
+    }
+    (glyph, false)
+}
+
 fn screen_grid(
     screen: &Screen,
     settings: &Settings,
@@ -251,33 +275,14 @@ fn screen_grid(
             }
             let width = f32::from(cell.width) * cell_width;
             let foreground = foreground_for(settings, cell.fg);
-            if let Some(mut graphic) = graphics::cell(&cell.text, width, cell_height, foreground) {
-                if cell.underline {
-                    // Graphics bypass text shaping, so retain their underline explicitly.
-                    let thickness = (settings.font_size / 14.0).min(cell_height);
-                    graphic = graphic.child(
-                        el().key("terminal-graphic-underline")
-                            .size(width, thickness)
-                            .fill(foreground)
-                            .absolute(0.0, cell_height - thickness),
-                    );
-                }
-                grid = grid.child(
-                    graphic
-                        .key(format!("terminal-graphic-{x}-{y}"))
-                        .absolute(x as f32 * cell_width, y as f32 * cell_height),
-                );
-                continue;
-            }
-            let mut glyph = text(cell.text.clone())
-                .font(font(settings, cell_height, cell.bold, cell.italic))
-                .color(foreground)
-                .size(f32::from(cell.width) * cell_width, cell_height)
-                .absolute(x as f32 * cell_width, y as f32 * cell_height);
-            if cell.underline {
-                glyph = glyph.spans(vec![Span::new(0, cell.text.len()).underline(foreground)]);
-            }
-            grid = grid.child(glyph);
+            let (glyph, graphic) = cell_ink(cell, settings, width, cell_height, foreground);
+            // Retain graphic keys for inspection without adding identity to every glyph.
+            let glyph = if graphic {
+                glyph.key(format!("terminal-graphic-{x}-{y}"))
+            } else {
+                glyph
+            };
+            grid = grid.child(glyph.absolute(x as f32 * cell_width, y as f32 * cell_height));
         }
     }
     if active
@@ -285,16 +290,64 @@ fn screen_grid(
         && screen.cursor_x < screen.cols
         && screen.cursor_y < screen.rows
     {
-        grid = grid.child(
-            el().key("terminal-cursor")
-                .ime_cursor()
-                .size(2.0, cell_height)
-                .fill(color([200, 210, 220]))
-                .absolute(
-                    f32::from(screen.cursor_x) * cell_width,
-                    f32::from(screen.cursor_y) * cell_height,
-                ),
-        );
+        let row = screen.cells.get(usize::from(screen.cursor_y));
+        let mut x = usize::from(screen.cursor_x);
+        // A cursor on the continuation of a wide grapheme covers the whole glyph.
+        if x > 0 && row.and_then(|r| r.get(x)).is_some_and(|c| c.width == 0) {
+            x -= 1;
+        }
+        let cell = row.and_then(|r| r.get(x));
+        let width = f32::from(cell.map_or(1, |c| c.width.max(1)))
+            .min(f32::from(screen.cols) - x as f32)
+            * cell_width;
+        let rgb = screen.cursor_color.unwrap_or([200, 210, 220]);
+        let fill = color(rgb);
+        let thickness = 2.0_f32.min(cell_width).min(cell_height);
+        let (w, h, top) = match screen.cursor_shape {
+            CursorShape::Bar => (thickness, cell_height, 0.0),
+            CursorShape::Underline => (width, thickness, cell_height - thickness),
+            CursorShape::Block | CursorShape::HollowBlock => (width, cell_height, 0.0),
+        };
+        let mut cursor = el()
+            .key("terminal-cursor")
+            .ime_cursor()
+            .clip_soft(0.0)
+            .size(w, h)
+            .absolute(
+                x as f32 * cell_width,
+                f32::from(screen.cursor_y) * cell_height + top,
+            );
+        cursor = if screen.cursor_shape == CursorShape::HollowBlock {
+            cursor.border(thickness.min(1.0), fill)
+        } else {
+            cursor.fill(fill)
+        };
+        if screen.cursor_shape == CursorShape::Block
+            && let Some(cell) = cell
+        {
+            // Choose black/white by linear luminance so even OSC 12 dark cursor
+            // colors keep the character legible. Do not soften this contrast ink.
+            let luminance = 0.2126 * fill.r + 0.7152 * fill.g + 0.0722 * fill.b;
+            let ink = color(if luminance > 0.179 { [0; 3] } else { [255; 3] });
+            cursor = cursor.child(
+                cell_ink(cell, settings, width, cell_height, ink)
+                    .0
+                    .key("terminal-cursor-ink")
+                    .absolute(0.0, 0.0),
+            );
+        }
+        if screen.cursor_blinking {
+            // Renderer-owned, bounded to two frames/second; no IPC or whole-view
+            // timer. Reduce Motion holds it visible and hidden windows stop waking.
+            cursor = cursor.cycle(rune::Cycle {
+                period: 1.0,
+                phase: 0.0,
+                stops: &[(0.0, 1.0), (0.499, 1.0), (0.5, 0.0), (1.0, 0.0)],
+                still: 1.0,
+                fps: 2.0,
+            });
+        }
+        grid = grid.child(cursor);
     }
     grid
 }

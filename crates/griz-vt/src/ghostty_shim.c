@@ -24,6 +24,10 @@ struct GrizVtSnapshot {
     uint16_t cursor_x;
     uint16_t cursor_y;
     uint8_t cursor_visible;
+    uint8_t cursor_shape;
+    uint8_t cursor_blinking;
+    uint8_t cursor_color_has_value;
+    uint8_t cursor_color[3];
     uint8_t application_cursor;
     uint8_t bracketed_paste;
     uint8_t mouse_tracking;
@@ -699,6 +703,18 @@ int griz_vt_snapshot(struct GrizVt* vt, struct GrizVtSnapshot** out) {
     snapshot->scrollback_offset = bar.total - bar.len - bar.offset;
     snapshot->cursor_visible = cursor.visible && cursor.viewport_has_value &&
         snapshot->scrollback_offset == 0 ? 1 : 0;
+    // Private wire values shared with GrizVtSnapshot, not Ghostty's enum values.
+    switch (cursor.visual_style) {
+        case GHOSTTY_CURSOR_STYLE_BAR: snapshot->cursor_shape = 1; break;
+        case GHOSTTY_CURSOR_STYLE_UNDERLINE: snapshot->cursor_shape = 2; break;
+        case GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW: snapshot->cursor_shape = 3; break;
+        default: snapshot->cursor_shape = 0; break;
+    }
+    snapshot->cursor_blinking = cursor.blinking ? 1 : 0;
+    snapshot->cursor_color_has_value = colors.cursor_has_value ? 1 : 0;
+    if (colors.cursor_has_value) {
+        griz_rgb(snapshot->cursor_color, colors.cursor);
+    }
     if (cursor.viewport_has_value) {
         snapshot->cursor_x = cursor.viewport_x;
         snapshot->cursor_y = cursor.viewport_y;
