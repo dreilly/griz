@@ -501,7 +501,8 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 
 - Optionally named, renameable workspaces and independently running terminal tabs.
 - Real local shells with input, cursor, ANSI/truecolor backgrounds and text,
-  bold/italic/underline, Unicode cells, and alternate-screen state.
+  bold/italic/faint, conceal, blink, strike/overline, colored underline variants,
+  Unicode cells, and alternate-screen state. Conceal hides rendering, not copied text.
 - Cell-fitted block elements and solid light/heavy box-drawing strokes (including
   mixed-weight junctions and half-line caps), so TUI logos and borders join without
   font-leading gaps. The same geometry scales into navigation previews.
@@ -523,7 +524,8 @@ and loses the catalog. No launchd integration or reboot restoration is installed
   uses newlines between visual rows (soft-wrapped logical lines are not yet distinguished).
   Secondary clicks are reported as press/release pairs; right-button dragging is not yet exposed by Rune.
 - Fixed-cell monospace rendering, not Ghostty's full renderer; basic shell/TUI use is the target.
-  Dashed, double-line, rounded, and diagonal box drawing still uses the selected font.
+  SGR decorations use cell geometry; dashed, double-line, rounded, and diagonal box-drawing
+  glyphs still use the selected font.
   Shade blocks use uniform 25/50/75% foreground coverage rather than stippled patterns.
 - Full snapshots, not dirty-cell deltas. Limits: 16 workspaces, 64 terminals total,
   16 clients, eight panes per tab, 300 × 120 cells per grid, 256 KiB per input or raw

@@ -6,7 +6,9 @@ mod program_status_tests;
 #[cfg(test)]
 mod scrollback_tests;
 
-use griz_protocol::{Cell, MouseAction, MouseButton, MouseInput, ProgramStatusRecord, Screen};
+use griz_protocol::{
+    Cell, MouseAction, MouseButton, MouseInput, ProgramStatusRecord, Screen, UnderlineStyle,
+};
 use std::error;
 use std::ffi::{c_int, c_void};
 use std::fmt;
@@ -17,7 +19,11 @@ use std::slice;
 
 const CELL_BOLD: u8 = 1 << 0;
 const CELL_ITALIC: u8 = 1 << 1;
-const CELL_UNDERLINE: u8 = 1 << 2;
+const CELL_FAINT: u8 = 1 << 2;
+const CELL_BLINK: u8 = 1 << 3;
+const CELL_CONCEALED: u8 = 1 << 4;
+const CELL_STRIKETHROUGH: u8 = 1 << 5;
+const CELL_OVERLINE: u8 = 1 << 6;
 #[cfg(test)]
 const OUT_OF_MEMORY: c_int = -1;
 const INVALID_VALUE: c_int = -2;
@@ -36,6 +42,8 @@ struct GrizVtCell {
     fg: [u8; 3],
     bg: [u8; 3],
     flags: u8,
+    underline: u8,
+    underline_color: [u8; 3],
 }
 
 #[repr(C)]
@@ -464,7 +472,20 @@ impl Snapshot {
                     bg: cell.bg,
                     bold: cell.flags & CELL_BOLD != 0,
                     italic: cell.flags & CELL_ITALIC != 0,
-                    underline: cell.flags & CELL_UNDERLINE != 0,
+                    faint: cell.flags & CELL_FAINT != 0,
+                    blink: cell.flags & CELL_BLINK != 0,
+                    concealed: cell.flags & CELL_CONCEALED != 0,
+                    strikethrough: cell.flags & CELL_STRIKETHROUGH != 0,
+                    overline: cell.flags & CELL_OVERLINE != 0,
+                    underline: match cell.underline {
+                        1 => UnderlineStyle::Single,
+                        2 => UnderlineStyle::Double,
+                        3 => UnderlineStyle::Curly,
+                        4 => UnderlineStyle::Dotted,
+                        5 => UnderlineStyle::Dashed,
+                        _ => UnderlineStyle::None,
+                    },
+                    underline_color: cell.underline_color,
                 });
             }
             cells.push(decoded_row);
@@ -537,10 +558,60 @@ mod tests {
         assert_eq!(styled.bg, [1, 2, 3]);
         assert!(styled.bold);
         assert!(styled.italic);
-        assert!(styled.underline);
+        assert_eq!(styled.underline, UnderlineStyle::Single);
         assert_eq!(screen.cells[1][0].text, "B");
         assert_eq!((screen.cursor_x, screen.cursor_y), (3, 2));
         assert!(screen.cursor_visible);
+    }
+
+    #[test]
+    fn sgr_styles_variants_colors_and_resets_are_exported() {
+        let mut terminal = Terminal::new(20, 2).unwrap();
+        terminal.write(b"\x1b[2;5;8;9;53;4:1;58;2;1;2;3mA\x1b[4:2mB\x1b[4:3mC\x1b[4:4mD\x1b[4:5mE");
+        terminal.write(b"\x1b[0;4;38;5;1;58;5;1mF\x1b[59mG\x1b[24mH");
+
+        let screen = terminal.screen().unwrap();
+        let a = &screen.cells[0][0];
+        assert_eq!(a.text, "A");
+        assert!(
+            a.faint && a.blink && a.concealed && a.strikethrough && a.overline,
+            "all Ghostty style flags must cross the shim"
+        );
+        assert_eq!(a.underline, UnderlineStyle::Single);
+        assert_eq!(a.underline_color, [1, 2, 3]);
+        for (x, style) in [
+            (1, UnderlineStyle::Double),
+            (2, UnderlineStyle::Curly),
+            (3, UnderlineStyle::Dotted),
+            (4, UnderlineStyle::Dashed),
+        ] {
+            assert_eq!(screen.cells[0][x].underline, style);
+            assert_eq!(screen.cells[0][x].underline_color, [1, 2, 3]);
+        }
+        let palette = &screen.cells[0][5];
+        assert_eq!(palette.underline, UnderlineStyle::Single);
+        assert_eq!(palette.underline_color, screen.cells[0][5].fg);
+        assert_ne!(palette.underline_color, a.underline_color);
+        let reset_color = &screen.cells[0][6];
+        assert_eq!(reset_color.underline_color, reset_color.fg);
+        assert_eq!(screen.cells[0][7].underline, UnderlineStyle::None);
+
+        terminal.write(b"\r\n\x1b[2;5;8;9;53;4mX\x1b[22;25;28;29;55;24mY");
+        let reset = terminal.screen().unwrap();
+        let y = &reset.cells[1][1];
+        assert!(!y.faint && !y.blink && !y.concealed && !y.strikethrough && !y.overline);
+        assert_eq!(y.underline, UnderlineStyle::None);
+    }
+
+    #[test]
+    fn inverse_resolves_colors_before_default_underline_color() {
+        let mut terminal = Terminal::new(4, 1).unwrap();
+        terminal.write(b"\x1b[7;4;38;2;1;2;3;48;2;4;5;6mA");
+        let screen = terminal.screen().unwrap();
+        let cell = &screen.cells[0][0];
+        assert_eq!(cell.fg, [4, 5, 6]);
+        assert_eq!(cell.bg, [1, 2, 3]);
+        assert_eq!(cell.underline_color, cell.fg);
     }
 
     #[test]

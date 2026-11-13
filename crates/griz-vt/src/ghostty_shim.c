@@ -7,7 +7,11 @@
 
 #define GRIZ_CELL_BOLD (1u << 0)
 #define GRIZ_CELL_ITALIC (1u << 1)
-#define GRIZ_CELL_UNDERLINE (1u << 2)
+#define GRIZ_CELL_FAINT (1u << 2)
+#define GRIZ_CELL_BLINK (1u << 3)
+#define GRIZ_CELL_CONCEALED (1u << 4)
+#define GRIZ_CELL_STRIKETHROUGH (1u << 5)
+#define GRIZ_CELL_OVERLINE (1u << 6)
 
 struct GrizVtCell {
     size_t text_offset;
@@ -16,6 +20,8 @@ struct GrizVtCell {
     uint8_t fg[3];
     uint8_t bg[3];
     uint8_t flags;
+    uint8_t underline;
+    uint8_t underline_color[3];
 };
 
 struct GrizVtSnapshot {
@@ -582,6 +588,21 @@ static void griz_rgb(uint8_t out[3], GhosttyColorRgb color) {
     out[2] = color.b;
 }
 
+static GhosttyColorRgb griz_style_color(
+    GhosttyStyleColor color,
+    const GhosttyRenderStateColors* colors,
+    GhosttyColorRgb fallback
+) {
+    switch (color.tag) {
+    case GHOSTTY_STYLE_COLOR_PALETTE:
+        return colors->palette[color.value.palette];
+    case GHOSTTY_STYLE_COLOR_RGB:
+        return color.value.rgb;
+    default:
+        return fallback;
+    }
+}
+
 static int griz_fill_cell(
     struct GrizVtSnapshot* snapshot,
     GhosttyRenderStateRowCells cells,
@@ -654,9 +675,26 @@ static int griz_fill_cell(
     if ((style.flags & GHOSTTY_STYLE_FLAG_ITALIC) != 0) {
         out->flags |= GRIZ_CELL_ITALIC;
     }
-    if (GHOSTTY_STYLE_UNDERLINE(style) != GHOSTTY_SGR_UNDERLINE_NONE) {
-        out->flags |= GRIZ_CELL_UNDERLINE;
+    if ((style.flags & GHOSTTY_STYLE_FLAG_FAINT) != 0) {
+        out->flags |= GRIZ_CELL_FAINT;
     }
+    if ((style.flags & GHOSTTY_STYLE_FLAG_BLINK) != 0) {
+        out->flags |= GRIZ_CELL_BLINK;
+    }
+    if ((style.flags & GHOSTTY_STYLE_FLAG_INVISIBLE) != 0) {
+        out->flags |= GRIZ_CELL_CONCEALED;
+    }
+    if ((style.flags & GHOSTTY_STYLE_FLAG_STRIKETHROUGH) != 0) {
+        out->flags |= GRIZ_CELL_STRIKETHROUGH;
+    }
+    if ((style.flags & GHOSTTY_STYLE_FLAG_OVERLINE) != 0) {
+        out->flags |= GRIZ_CELL_OVERLINE;
+    }
+    out->underline = (uint8_t)GHOSTTY_STYLE_UNDERLINE(style);
+    griz_rgb(
+        out->underline_color,
+        griz_style_color(style.underline_color, colors, fg)
+    );
 
     return griz_cell_text(snapshot, cells, out);
 }
@@ -800,6 +838,7 @@ int griz_vt_snapshot(struct GrizVt* vt, struct GrizVtSnapshot** out) {
         snapshot->cells[i].width = 1;
         griz_rgb(snapshot->cells[i].fg, colors.foreground);
         griz_rgb(snapshot->cells[i].bg, colors.background);
+        griz_rgb(snapshot->cells[i].underline_color, colors.foreground);
     }
 
     result = ghostty_render_state_get(

@@ -4,8 +4,9 @@ use crate::{
     settings::{Settings, Theme},
 };
 use griz_protocol::{Cell, CursorShape, Screen, TerminalId};
-use rune::{Color, Cursor, El, PointerButton, Span, TextStyle, el, text};
+use rune::{Color, Cursor, El, PointerButton, TextStyle, el, text};
 
+mod decorations;
 mod graphics;
 
 pub const PAD: f32 = 12.0;
@@ -213,28 +214,64 @@ fn font(settings: &Settings, height: f32, bold: bool, italic: bool) -> TextStyle
     if italic { style.italic() } else { style }
 }
 
-/// Use the same glyph path for normal cells and the contrasting ink on a block cursor.
-fn cell_ink(cell: &Cell, settings: &Settings, width: f32, height: f32, ink: Color) -> (El, bool) {
-    if let Some(mut graphic) = graphics::cell(&cell.text, width, height, ink) {
-        if cell.underline {
-            let thickness = (settings.font_size / 14.0).min(height);
-            graphic = graphic.child(
-                el().key("terminal-graphic-underline")
-                    .size(width, thickness)
-                    .fill(ink)
-                    .absolute(0.0, height - thickness),
-            );
-        }
-        return (graphic, true);
+const FAINT_ALPHA: f32 = 0.5;
+
+fn blink(ink: El) -> El {
+    ink.cycle(rune::Cycle {
+        period: 1.0,
+        phase: 0.0,
+        stops: &[(0.0, 1.0), (0.499, 1.0), (0.5, 0.0), (1.0, 0.0)],
+        still: 1.0,
+        fps: 2.0,
+    })
+}
+
+/// Use the same glyph/graphic/decorations path for normal cells and block-cursor contrast ink.
+/// Cursor contrast deliberately ignores faint, but cell blink still applies to its redraw.
+fn cell_ink(
+    cell: &Cell,
+    settings: &Settings,
+    width: f32,
+    height: f32,
+    foreground: Color,
+    underline: Color,
+    honor_faint: bool,
+) -> Option<(El, bool)> {
+    if cell.concealed {
+        return None;
     }
-    let mut glyph = text(cell.text.clone())
-        .font(font(settings, height, cell.bold, cell.italic))
-        .color(ink)
-        .size(width, height);
-    if cell.underline {
-        glyph = glyph.spans(vec![Span::new(0, cell.text.len()).underline(ink)]);
-    }
-    (glyph, false)
+    let faint = if honor_faint && cell.faint {
+        FAINT_ALPHA
+    } else {
+        1.0
+    };
+    let foreground = foreground.alpha(foreground.a * faint);
+    let underline = underline.alpha(underline.a * faint);
+    let (ink, graphic) =
+        if let Some(graphic) = graphics::cell(&cell.text, width, height, foreground) {
+            (graphic, true)
+        } else {
+            (
+                text(cell.text.clone())
+                    .font(font(settings, height, cell.bold, cell.italic))
+                    .color(foreground)
+                    .size(width, height),
+                false,
+            )
+        };
+    let ink = decorations::add(
+        ink,
+        cell,
+        decorations::Paint {
+            width,
+            height,
+            font_size: settings.font_size,
+            foreground,
+            underline,
+            graphic,
+        },
+    );
+    Some((if cell.blink { blink(ink) } else { ink }, graphic))
 }
 
 fn screen_grid(
@@ -270,12 +307,24 @@ fn screen_grid(
             }
         }
         for (x, cell) in row.iter().enumerate() {
-            if cell.width == 0 || cell.text.trim().is_empty() && !cell.underline {
+            let decorated = !cell.underline.is_none() || cell.strikethrough || cell.overline;
+            if cell.width == 0 || cell.concealed || cell.text.trim().is_empty() && !decorated {
                 continue;
             }
             let width = f32::from(cell.width) * cell_width;
             let foreground = foreground_for(settings, cell.fg);
-            let (glyph, graphic) = cell_ink(cell, settings, width, cell_height, foreground);
+            let underline = foreground_for(settings, cell.underline_color);
+            let Some((glyph, graphic)) = cell_ink(
+                cell,
+                settings,
+                width,
+                cell_height,
+                foreground,
+                underline,
+                true,
+            ) else {
+                continue;
+            };
             // Retain graphic keys for inspection without adding identity to every glyph.
             let glyph = if graphic {
                 glyph.key(format!("terminal-graphic-{x}-{y}"))
@@ -326,26 +375,19 @@ fn screen_grid(
             && let Some(cell) = cell
         {
             // Choose black/white by linear luminance so even OSC 12 dark cursor
-            // colors keep the character legible. Do not soften this contrast ink.
+            // colors keep the character legible. Do not soften or faint this contrast ink.
             let luminance = 0.2126 * fill.r + 0.7152 * fill.g + 0.0722 * fill.b;
             let ink = color(if luminance > 0.179 { [0; 3] } else { [255; 3] });
-            cursor = cursor.child(
-                cell_ink(cell, settings, width, cell_height, ink)
-                    .0
-                    .key("terminal-cursor-ink")
-                    .absolute(0.0, 0.0),
-            );
+            if let Some((cell_ink, _)) =
+                cell_ink(cell, settings, width, cell_height, ink, ink, false)
+            {
+                cursor = cursor.child(cell_ink.key("terminal-cursor-ink").absolute(0.0, 0.0));
+            }
         }
         if screen.cursor_blinking {
             // Renderer-owned, bounded to two frames/second; no IPC or whole-view
             // timer. Reduce Motion holds it visible and hidden windows stop waking.
-            cursor = cursor.cycle(rune::Cycle {
-                period: 1.0,
-                phase: 0.0,
-                stops: &[(0.0, 1.0), (0.499, 1.0), (0.5, 0.0), (1.0, 0.0)],
-                still: 1.0,
-                fps: 2.0,
-            });
+            cursor = blink(cursor);
         }
         grid = grid.child(cursor);
     }

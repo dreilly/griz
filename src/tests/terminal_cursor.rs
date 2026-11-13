@@ -87,7 +87,8 @@ fn block_cursor_redraws_contrasting_text_without_mutating_cell_styles() {
         assert_eq!(glyph.rect, cursor.rect);
         assert_eq!(glyph.text_color, Some(color(ink)));
         let cell = &rt.state.screen().unwrap().cells[0][0];
-        assert!(cell.bold && cell.italic && cell.underline);
+        assert!(cell.bold && cell.italic);
+        assert_eq!(cell.underline, griz_protocol::UnderlineStyle::Single);
         assert_eq!(cell.fg, [100, 150, 200]);
     }
 }

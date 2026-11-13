@@ -158,6 +158,21 @@ fn scrolled_history_can_be_selected_and_wheel_never_reaches_the_application() {
 }
 
 #[test]
+fn concealed_text_remains_available_to_terminal_selection_and_copy() {
+    let (mut rt, outgoing, clipboard) = setup("\x1b[8msecret", false);
+    assert!(
+        !rt.elements()
+            .iter()
+            .any(|element| element.text.as_deref() == Some("secret"))
+    );
+    let start = point(&rt, "terminal", 0.0, 0.5);
+    let end = point(&rt, "terminal", 6.0, 0.5);
+    select(&mut rt, start, end);
+    assert_eq!(clipboard.text(), "secret");
+    assert!(commands(&outgoing).is_empty());
+}
+
+#[test]
 fn dragging_highlights_and_copies_only_on_release_with_a_bottom_toast() {
     let (mut rt, outgoing, clipboard) = setup("hello world", false);
     clipboard.set("untouched");

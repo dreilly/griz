@@ -78,7 +78,26 @@ pub struct TabInfo {
     pub layout: PaneLayout,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum UnderlineStyle {
+    #[default]
+    None = 0,
+    Single = 1,
+    Double = 2,
+    Curly = 3,
+    Dotted = 4,
+    Dashed = 5,
+}
+
+impl UnderlineStyle {
+    pub fn is_none(self) -> bool {
+        self == Self::None
+    }
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Cell {
     pub text: String,
     /// Display columns: 0 for the continuation of a wide glyph, otherwise 1 or 2.
@@ -87,7 +106,86 @@ pub struct Cell {
     pub bg: [u8; 3],
     pub bold: bool,
     pub italic: bool,
-    pub underline: bool,
+    #[serde(default)]
+    pub faint: bool,
+    #[serde(default)]
+    pub blink: bool,
+    #[serde(default)]
+    pub concealed: bool,
+    #[serde(default)]
+    pub strikethrough: bool,
+    #[serde(default)]
+    pub overline: bool,
+    /// Underline style. Legacy boolean IPC values decode as single/none.
+    pub underline: UnderlineStyle,
+    /// Resolved underline RGB. An unset SGR underline color follows the resolved foreground.
+    pub underline_color: [u8; 3],
+}
+
+impl<'de> Deserialize<'de> for Cell {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum UnderlineValue {
+            Legacy(bool),
+            Style(UnderlineStyle),
+        }
+
+        fn underline<'de, D>(deserializer: D) -> Result<UnderlineStyle, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            Ok(match UnderlineValue::deserialize(deserializer)? {
+                UnderlineValue::Legacy(false) => UnderlineStyle::None,
+                UnderlineValue::Legacy(true) => UnderlineStyle::Single,
+                UnderlineValue::Style(style) => style,
+            })
+        }
+
+        #[derive(Deserialize)]
+        struct Wire {
+            text: String,
+            width: u8,
+            fg: [u8; 3],
+            bg: [u8; 3],
+            bold: bool,
+            italic: bool,
+            #[serde(default)]
+            faint: bool,
+            #[serde(default)]
+            blink: bool,
+            #[serde(default)]
+            concealed: bool,
+            #[serde(default)]
+            strikethrough: bool,
+            #[serde(default)]
+            overline: bool,
+            #[serde(default, deserialize_with = "underline")]
+            underline: UnderlineStyle,
+            #[serde(default)]
+            underline_color: Option<[u8; 3]>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            text: wire.text,
+            width: wire.width,
+            fg: wire.fg,
+            bg: wire.bg,
+            bold: wire.bold,
+            italic: wire.italic,
+            faint: wire.faint,
+            blink: wire.blink,
+            concealed: wire.concealed,
+            strikethrough: wire.strikethrough,
+            overline: wire.overline,
+            underline: wire.underline,
+            underline_color: wire.underline_color.unwrap_or(wire.fg),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -520,6 +618,47 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    fn cell_sgr_styles_round_trip_and_legacy_underlines_remain_readable() {
+        let cell = Cell {
+            text: "界".into(),
+            width: 2,
+            fg: [1, 2, 3],
+            bg: [4, 5, 6],
+            bold: true,
+            italic: true,
+            faint: true,
+            blink: true,
+            concealed: true,
+            strikethrough: true,
+            overline: true,
+            underline: UnderlineStyle::Curly,
+            underline_color: [7, 8, 9],
+        };
+        let value = serde_json::to_value(&cell).unwrap();
+        assert_eq!(value["underline"], "curly");
+        assert_eq!(value["underline_color"], serde_json::json!([7, 8, 9]));
+        assert_eq!(serde_json::from_value::<Cell>(value).unwrap(), cell);
+        let mut bytes = Vec::new();
+        send(&mut bytes, &cell).unwrap();
+        assert_eq!(receive::<Cell>(&mut bytes.as_slice()).unwrap(), cell);
+
+        let legacy: Cell = serde_json::from_value(serde_json::json!({
+            "text": "A",
+            "width": 1,
+            "fg": [10, 20, 30],
+            "bg": [0, 0, 0],
+            "bold": false,
+            "italic": false,
+            "underline": true
+        }))
+        .unwrap();
+        assert_eq!(legacy.underline, UnderlineStyle::Single);
+        assert_eq!(legacy.underline_color, legacy.fg);
+        assert!(!legacy.faint && !legacy.blink && !legacy.concealed);
+    }
+
     #[test]
     fn paste_commands_and_confirmation_metadata_have_distinct_schema() {
         assert_eq!(

@@ -50,19 +50,17 @@ honestly falls back to text paste rather than advertising clipboard ownership or
 permission that Griz does not implement. Clipboard reads remain tracked separately
 under terminal clipboard operations below.
 
-### 2. Stop dropping SGR styles, especially invisible text
+### 2. Stop dropping SGR styles, especially invisible text — addressed
 
-**Confirmed:** `ghostty_shim.c::griz_fill_cell` and protocol `Cell` retain only
-bold, italic, and a boolean underline. `src/terminal_view.rs` consequently omits
-faint, invisible/conceal, strikethrough, overline, cell blink, and underline
-style/color. In particular, concealed text is not concealed by Griz's renderer.
+The Ghostty snapshot and IPC now carry faint, conceal, strikethrough, overline,
+cell blink, every `GhosttySgrUnderline` variant, and resolved underline RGB.
+Rendering uses cell-relative decoration geometry for text, wide graphemes, block
+graphics, previews, and block-cursor redraws. Blink remains renderer-owned and
+Reduce Motion holds ink visible; backgrounds stay steady.
 
-**Ghostty support:** Style flags, underline variants, and underline color in
-`style.h`. This is cell blink, separate from the cursor work.
-
-**Suggested scope:** Expand the cell style schema and implement conceal first,
-then dim/strike/overline and curly/double/colored underline. Keep animation
-renderer-side. Conceal is a display behavior, not protection of terminal data.
+Conceal suppresses all ink and decorations, including graphics and cursor redraws,
+while retaining terminal text for selection/copy. It is display behavior, not a
+security boundary.
 
 ### 3. Honor synchronized-output holds
 
