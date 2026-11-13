@@ -502,7 +502,9 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 - Optionally named, renameable workspaces and independently running terminal tabs.
 - Real local shells with input, cursor, ANSI/truecolor backgrounds and text,
   bold/italic/faint, conceal, blink, strike/overline, colored underline variants,
-  Unicode cells, and alternate-screen state. Conceal hides rendering, not copied text.
+  Unicode cells, alternate-screen state, and synchronized output (mode 2026). Held
+  redraws stay on each client's last completed frame; a missing release recovers after
+  one second. Conceal hides rendering, not copied text.
 - Cell-fitted block elements and solid light/heavy box-drawing strokes (including
   mixed-weight junctions and half-line caps), so TUI logos and borders join without
   font-leading gaps. The same geometry scales into navigation previews.
@@ -567,8 +569,11 @@ Agent tests cover native OSC 7501 negotiation/DA ordering, arbitrary PTY chunkin
 metadata validation, bounded hierarchical records, field replacement/inheritance,
 clear/reset/prompt/exit lifetimes, hidden/multi-client/detached reporting,
 revision/generation-safe acknowledgements, and exact-pane navigation/input gating.
-Other tests exercise libghostty's colors/cursor/Unicode/alternate screen/query
-responses and Rune's cell placement.
+Synchronized-output tests cover arbitrary chunk boundaries, reset/resize/release,
+continued query replies and input modes, cached attach/commands/catalog/split/preview/
+scroll publication, other-terminal output, stalled one-second recovery, shell exit,
+and future holds. Other tests exercise libghostty's colors/cursor/Unicode/alternate
+screen/query responses and Rune's cell placement.
 
 ### Input latency measurements
 

@@ -62,17 +62,32 @@ Conceal suppresses all ink and decorations, including graphics and cursor redraw
 while retaining terminal text for selection/copy. It is display behavior, not a
 security boundary.
 
-### 3. Honor synchronized-output holds
+### 3. Honor synchronized-output holds — addressed
 
-**Confirmed:** `crates/griz-core/src/service.rs` schedules output publication
-without consulting Ghostty's render-hold state. Applications using mode 2026 can
-still expose intermediate redraws.
+The VT shim registers `GHOSTTY_TERMINAL_OPT_RENDER_HOLD` and exposes only its
+callback-derived boolean to Rust; Griz does not duplicate the escape-sequence
+parser. PTY bytes continue through Ghostty while held, including query replies,
+program-status/catalog effects, paste/input mode changes, resets, and other VT
+state. Only screen publication is coalesced.
 
-**Ghostty support:** `GHOSTTY_MODE_SYNCHRONIZED_OUTPUT` and
-`GHOSTTY_TERMINAL_OPT_RENDER_HOLD` (`modes.h`, `terminal.h`).
+Each terminal retains one last completed live `Screen`, initially the blank new
+terminal, and each client retains one completed `Screen` per currently visible
+real pane for its independent scroll viewport. Client caches are pruned when
+switching tabs (at most eight panes), and terminal caches are bounded by the
+64-terminal limit. A newly revisited held pane falls back to its completed live
+frame until release. Caches are removed with terminals/clients. Attach, commands,
+directory/catalog changes, output from another terminal, split panes, previews,
+and scroll publications use those completed frames while held; a fresh attach
+therefore receives the last completed live frame, or the initial blank frame if
+mode 2026 began before any later frame completed.
 
-**Suggested scope:** Surface hold transitions and coalesce output publications
-until release; include a bounded timeout/recovery strategy for misbehaving apps.
+Ghostty's paired callback semantics are authoritative: DECRST 2026 and RIS release
+a hold, and `ghostty_terminal_resize()` also releases it as documented so the
+resized result can appear immediately. Release schedules the latest screen without
+polling. A missing release is recovered after one second by disabling mode 2026
+through Ghostty's host mode API (whose documented behavior does not invoke the
+callback) and synchronizing the shim boolean. Repeated begin sequences do not move
+the deadline; shell exit also ends a hold, and later holds can start normally.
 
 ### 4. Use Ghostty's keyboard encoder
 

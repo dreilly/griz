@@ -34,6 +34,8 @@ mod scrollback;
 mod shell_startup;
 #[path = "session/splits.rs"]
 mod splits;
+#[path = "session/synchronized_output.rs"]
+mod synchronized_output;
 #[path = "session/workspaces.rs"]
 mod workspaces;
 

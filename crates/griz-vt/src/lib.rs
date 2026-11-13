@@ -82,6 +82,8 @@ unsafe extern "C" {
     fn griz_vt_free(vt: *mut GrizVt);
     fn griz_vt_write(vt: *mut GrizVt, data: *const u8, len: usize);
     fn griz_vt_resize(vt: *mut GrizVt, cols: u16, rows: u16) -> c_int;
+    fn griz_vt_render_held(vt: *const GrizVt) -> u8;
+    fn griz_vt_end_render_hold(vt: *mut GrizVt) -> c_int;
     fn griz_vt_mouse_input(
         vt: *mut GrizVt,
         action: u8,
@@ -242,11 +244,28 @@ impl Terminal {
     }
 
     /// Resizes the terminal grid. Primary-screen wrapped content may reflow.
+    /// Ghostty also ends any synchronized-output render hold on every resize.
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), Error> {
         // SAFETY: the terminal handle is live and the scalar arguments have the
         // exact types expected by the shim.
         check("resize", unsafe {
             griz_vt_resize(self.raw.as_ptr(), cols, rows)
+        })
+    }
+
+    /// Whether Ghostty has an active synchronized-output render hold.
+    pub fn render_held(&self) -> bool {
+        // SAFETY: the terminal handle is live and the shim returns a copied boolean.
+        unsafe { griz_vt_render_held(self.raw.as_ptr()) != 0 }
+    }
+
+    /// Ends a stalled synchronized-output hold without resetting terminal contents.
+    /// Ghostty's host-side mode setter intentionally does not invoke the hold callback,
+    /// so the shim updates its callback-derived boolean after a successful change.
+    pub fn end_render_hold(&mut self) -> Result<(), Error> {
+        // SAFETY: the terminal handle is live and uniquely owned by this wrapper.
+        check("end render hold", unsafe {
+            griz_vt_end_render_hold(self.raw.as_ptr())
         })
     }
 
@@ -943,6 +962,72 @@ mod tests {
         assert!(screen.bracketed_paste);
         assert_eq!(terminal.take_responses().unwrap(), b"\x1b[1;1R");
         assert!(terminal.take_responses().unwrap().is_empty());
+    }
+
+    #[test]
+    fn synchronized_output_hold_tracks_chunked_start_end_reset_and_resize() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        assert!(!terminal.render_held());
+
+        terminal.write(b"\x1b[?20");
+        assert!(!terminal.render_held());
+        terminal.write(b"26h");
+        assert!(terminal.render_held());
+        terminal.write(b"\x1b[?2026h");
+        assert!(
+            terminal.render_held(),
+            "repeated begin is not a new transition"
+        );
+        terminal.write(b"\x1b[?202");
+        assert!(terminal.render_held());
+        terminal.write(b"6l");
+        assert!(!terminal.render_held());
+
+        terminal.write(b"\x1b[?2026hheld\x1b");
+        assert!(terminal.render_held());
+        terminal.write(b"c");
+        assert!(!terminal.render_held(), "RIS ends the hold");
+
+        terminal.write(b"\x1b[?2026h");
+        assert!(terminal.render_held());
+        terminal.resize(9, 3).unwrap();
+        assert!(!terminal.render_held(), "Ghostty resize ends the hold");
+    }
+
+    #[test]
+    fn synchronized_output_keeps_parsing_replies_and_input_modes_live() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        terminal.write(b"\x1b[?2026hintermediate\x1b[6n\x1b[?2004h");
+        assert!(terminal.render_held());
+        assert_eq!(terminal.take_responses().unwrap(), b"\x1b[2;5R");
+        assert_eq!(
+            terminal.paste("one\ntwo", false).unwrap(),
+            PasteResult::Written(b"\x1b[200~one\ntwo\x1b[201~".to_vec())
+        );
+        assert!(terminal.render_held());
+        assert!(
+            terminal
+                .screen()
+                .unwrap()
+                .cells
+                .iter()
+                .flatten()
+                .any(|cell| cell.text == "i"),
+            "the VT continues updating internally while publication is held"
+        );
+    }
+
+    #[test]
+    fn stalled_hold_can_be_ended_and_a_future_hold_can_start() {
+        let mut terminal = Terminal::new(8, 2).unwrap();
+        terminal.write(b"\x1b[?2026hfirst");
+        assert!(terminal.render_held());
+        terminal.end_render_hold().unwrap();
+        assert!(!terminal.render_held());
+        terminal.write(b"\x1b[?2026hsecond");
+        assert!(terminal.render_held());
+        terminal.write(b"\x1b[?2026l");
+        assert!(!terminal.render_held());
     }
 
     #[test]

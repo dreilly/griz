@@ -15,12 +15,36 @@ use std::time::{Duration, Instant};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const DIRECTORY_INTERVAL: Duration = Duration::from_millis(250);
+/// Bound a broken application's synchronized-output hold. Recovery disables mode 2026
+/// through Ghostty, publishes the latest complete frame, and permits future holds.
+const RENDER_HOLD_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn output_frame_deadline(last: Option<Instant>, now: Instant) -> Instant {
     last.map_or(now, |last| (last + FRAME_INTERVAL).max(now))
+}
+
+fn capture_completed_screen(
+    terminal: &mut Terminal,
+    completed: &mut Screen,
+) -> std::result::Result<Screen, griz_vt::Error> {
+    if terminal.render_held() {
+        Ok(completed.clone())
+    } else {
+        let screen = terminal.screen()?;
+        *completed = screen.clone();
+        Ok(screen)
+    }
+}
+
+fn completed_pane_screen(held: bool, client: Option<&Screen>, live: &Screen) -> Screen {
+    if held {
+        client.unwrap_or(live).clone()
+    } else {
+        live.clone()
+    }
 }
 
 fn paste_line_count(text: &str) -> u32 {
@@ -68,6 +92,30 @@ mod pacing_tests {
             );
         }
     }
+
+    #[test]
+    fn in_memory_publication_uses_completed_live_and_client_frames_during_a_hold() {
+        let mut terminal = Terminal::new(12, 2).unwrap();
+        let mut completed = terminal.screen().unwrap();
+        terminal.write(b"prior");
+        let prior = capture_completed_screen(&mut terminal, &mut completed).unwrap();
+        let mut client_view = prior.clone();
+        client_view.cells[0][0].text = "C".into();
+
+        terminal.write(b"\x1b[?2026h\x1b[2J\x1b[Hintermediate");
+        let held_live = capture_completed_screen(&mut terminal, &mut completed).unwrap();
+        assert_eq!(held_live, prior);
+        assert_eq!(completed_pane_screen(true, None, &held_live), prior);
+        assert_eq!(
+            completed_pane_screen(true, Some(&client_view), &held_live),
+            client_view
+        );
+
+        terminal.write(b"\x1b[2J\x1b[Hlatest\x1b[?2026l");
+        let released = capture_completed_screen(&mut terminal, &mut completed).unwrap();
+        assert_eq!(released.cells[0][0].text, "l");
+        assert_eq!(completed, released);
+    }
 }
 
 struct TerminalRecord {
@@ -78,6 +126,10 @@ struct TerminalRecord {
     generation: u64,
     grid: (u16, u16),
     vt: Terminal,
+    /// Last live frame completed outside a render hold. New clients use this prior
+    /// frame, initially blank, rather than reading held live cells.
+    completed_screen: Screen,
+    render_hold_deadline: Option<Instant>,
     session: Session,
     exited: Option<String>,
     agent_notifications: crate::agents::Notifications,
@@ -93,7 +145,8 @@ impl TerminalRecord {
         shell: &Path,
         tx: SyncSender<Message>,
     ) -> Result<Self> {
-        let vt = Terminal::new(grid.0, grid.1)?;
+        let mut vt = Terminal::new(grid.0, grid.1)?;
+        let completed_screen = vt.screen()?;
         let session = Session::spawn(shell, &cwd, id, generation, grid.0, grid.1, tx)?;
         Ok(Self {
             id,
@@ -103,6 +156,8 @@ impl TerminalRecord {
             generation,
             grid,
             vt,
+            completed_screen,
+            render_hold_deadline: None,
             session,
             exited: None,
             agent_notifications: crate::agents::Notifications::default(),
@@ -146,6 +201,9 @@ struct Client {
     dimensions: Option<(u16, u16)>,
     preview: Option<PreviewTarget>,
     viewports: HashMap<TerminalId, Viewport>,
+    /// Last completed frame for each currently visible real pane, including history.
+    /// Pruned on publication to MAX_PANES_PER_TAB; never retain every visited screen.
+    completed_screens: HashMap<TerminalId, Screen>,
     pending_paste: Option<PendingPaste>,
     next_paste_id: u64,
     ack: u64,
@@ -218,7 +276,8 @@ impl Service {
         let mut directory_deadline = Instant::now();
         let result = (|| {
             loop {
-                // A continuously full PTY queue must not starve the publication timer.
+                // A continuously full PTY queue must not starve hold recovery or frames.
+                self.recover_expired_render_holds();
                 if self
                     .frame_deadline
                     .is_some_and(|deadline| Instant::now() >= deadline)
@@ -238,6 +297,7 @@ impl Service {
                 let deadline = self
                     .frame_deadline
                     .into_iter()
+                    .chain(self.next_render_hold_deadline())
                     .chain(watch_directories.then_some(directory_deadline))
                     .min();
                 let message = if let Some(deadline) = deadline {
@@ -336,6 +396,7 @@ impl Service {
                 dimensions: client_dimensions,
                 preview: None,
                 viewports: HashMap::new(),
+                completed_screens: HashMap::new(),
                 pending_paste: None,
                 next_paste_id: 1,
                 ack: 0,
@@ -563,11 +624,7 @@ impl Service {
                     .map_err(|error| {
                         format!("terminal {terminal_id} input unavailable: {error}")
                     })?;
-                self.clients
-                    .get_mut(&client_id)
-                    .unwrap()
-                    .viewports
-                    .remove(&terminal_id);
+                self.follow_live(client_id, terminal_id);
                 Ok(Outcome::Input)
             }
             Command::Paste { terminal_id, text } => {
@@ -618,11 +675,7 @@ impl Service {
                     .scroll(viewport, rows)
                     .map_err(|error| format!("terminal {terminal_id} scroll: {error}"))?;
                 if viewport.is_live() {
-                    self.clients
-                        .get_mut(&client_id)
-                        .unwrap()
-                        .viewports
-                        .remove(&terminal_id);
+                    self.follow_live(client_id, terminal_id);
                 }
                 Ok(Outcome::Requester)
             }
@@ -680,11 +733,7 @@ impl Service {
                 input.try_send(data).map_err(|error| {
                     format!("terminal {terminal_id} input unavailable: {error}")
                 })?;
-                self.clients
-                    .get_mut(&client_id)
-                    .unwrap()
-                    .viewports
-                    .remove(&terminal_id);
+                self.follow_live(client_id, terminal_id);
                 Ok(Outcome::Input)
             }
             PasteResult::Rejected => {
@@ -768,11 +817,7 @@ impl Service {
                         pending.terminal_id
                     )
                 })?;
-                self.clients
-                    .get_mut(&client_id)
-                    .unwrap()
-                    .viewports
-                    .remove(&pending.terminal_id);
+                self.follow_live(client_id, pending.terminal_id);
                 Ok(Outcome::Input)
             }
             PasteResult::Rejected => Err(format!(
@@ -1125,6 +1170,7 @@ impl Service {
             client.selected.remove(&workspace_id);
             for terminal in &workspace.terminals {
                 client.viewports.remove(&terminal.id);
+                client.completed_screens.remove(&terminal.id);
             }
             if client.active_workspace == workspace_id {
                 client.active_workspace = fallback;
@@ -1182,6 +1228,7 @@ impl Service {
         let mut fallback_sizes = Vec::new();
         for client in self.clients.values_mut() {
             client.viewports.remove(&terminal_id);
+            client.completed_screens.remove(&terminal_id);
             if client.selected.get(&workspace_id) == Some(&Some(terminal_id)) {
                 client.selected.insert(workspace_id, fallback);
                 if client.active_workspace == workspace_id
@@ -1231,6 +1278,7 @@ impl Service {
         replacement.session.terminate();
         for client in self.clients.values_mut() {
             client.viewports.remove(&terminal_id);
+            client.completed_screens.remove(&terminal_id);
         }
         Ok(Outcome::Catalog)
     }
@@ -1239,36 +1287,71 @@ impl Service {
         let Some((workspace_index, terminal_index)) = self.terminal_location(terminal_id) else {
             return;
         };
-        let terminal = &mut self.workspaces[workspace_index].terminals[terminal_index];
-        if terminal.generation != generation {
-            return;
-        }
-        terminal.vt.write(&bytes);
-        // The reader can deliver final bytes after the child's wait notification.
-        // Preserve final done/error reports, but never resurrect transient ones.
-        if terminal.exited.is_some() {
-            terminal.vt.program_exited();
-        }
-        if terminal.vt.take_program_status_changed() {
-            terminal
-                .agent_notifications
-                .reconcile(terminal.vt.program_status());
-            self.catalog_dirty |= !self.clients.is_empty();
-        }
-        match terminal.vt.take_responses() {
-            Ok(responses) if !responses.is_empty() => {
-                if let Some(input) = terminal.session.input()
-                    && let Err(error) = input.try_send(responses)
-                {
-                    eprintln!("griz-core: terminal {terminal_id} response: {error}");
+        let (held, released, catalog_changed) = {
+            let terminal = &mut self.workspaces[workspace_index].terminals[terminal_index];
+            if terminal.generation != generation {
+                return;
+            }
+            let was_held = terminal.vt.render_held();
+            terminal.vt.write(&bytes);
+            let mut held = terminal.vt.render_held();
+            if !was_held && held {
+                terminal
+                    .render_hold_deadline
+                    .get_or_insert_with(|| Instant::now() + RENDER_HOLD_TIMEOUT);
+            } else if was_held && !held {
+                terminal.render_hold_deadline = None;
+            }
+
+            // The reader can deliver final bytes after the child's wait notification.
+            // An exited process cannot release a newly started hold later, so recover now.
+            if terminal.exited.is_some() {
+                terminal.vt.program_exited();
+                if held {
+                    if let Err(error) = terminal.vt.end_render_hold() {
+                        eprintln!("griz-core: terminal {terminal_id} exit hold recovery: {error}");
+                    }
+                    held = terminal.vt.render_held();
+                    if !held {
+                        terminal.render_hold_deadline = None;
+                    }
                 }
             }
-            Ok(_) => {}
-            Err(error) => {
-                eprintln!("griz-core: terminal {terminal_id} response capture: {error}");
+            let catalog_changed = terminal.vt.take_program_status_changed();
+            if catalog_changed {
+                terminal
+                    .agent_notifications
+                    .reconcile(terminal.vt.program_status());
             }
+            match terminal.vt.take_responses() {
+                Ok(responses) if !responses.is_empty() => {
+                    if let Some(input) = terminal.session.input()
+                        && let Err(error) = input.try_send(responses)
+                    {
+                        eprintln!("griz-core: terminal {terminal_id} response: {error}");
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("griz-core: terminal {terminal_id} response capture: {error}");
+                }
+            }
+            (held, was_held && !held, catalog_changed)
+        };
+        if catalog_changed {
+            self.catalog_dirty |= !self.clients.is_empty();
         }
-        self.queue_frame(terminal_id);
+        if held {
+            // Parsing, replies, statuses, and input continue, but output alone does not
+            // schedule repeated cached frames. Catalog changes remain independently visible.
+            if catalog_changed {
+                self.queue_frame(terminal_id);
+            }
+        } else if released {
+            self.queue_frame_immediate(terminal_id);
+        } else {
+            self.queue_frame(terminal_id);
+        }
     }
 
     fn exited(&mut self, terminal_id: TerminalId, generation: u64, status: String) -> Result<()> {
@@ -1280,6 +1363,15 @@ impl Service {
             return Ok(());
         }
         terminal.exited = Some(status);
+        if terminal.vt.render_held()
+            && let Err(error) = terminal.vt.end_render_hold()
+        {
+            eprintln!("griz-core: terminal {terminal_id} exit hold recovery: {error}");
+        }
+        terminal.render_hold_deadline = terminal
+            .vt
+            .render_held()
+            .then(|| Instant::now() + RENDER_HOLD_TIMEOUT);
         terminal.vt.program_exited();
         terminal.vt.take_program_status_changed();
         terminal
@@ -1295,25 +1387,44 @@ impl Service {
         let Some((workspace_index, terminal_index)) = self.terminal_location(terminal_id) else {
             return;
         };
-        let terminal = &mut self.workspaces[workspace_index].terminals[terminal_index];
-        if terminal.grid == size {
-            return;
+        let released = {
+            let terminal = &mut self.workspaces[workspace_index].terminals[terminal_index];
+            if terminal.grid == size {
+                return;
+            }
+            let was_held = terminal.vt.render_held();
+            if let Err(error) = terminal.vt.resize(size.0, size.1) {
+                eprintln!("griz-core: terminal {terminal_id} render resize: {error}");
+                return;
+            }
+            if terminal.exited.is_none()
+                && let Err(error) = terminal.session.resize(size.0, size.1)
+            {
+                // A shell may exit between the command and its wait notification.
+                eprintln!("griz-core: terminal {terminal_id} PTY resize: {error}");
+            }
+            terminal.grid = size;
+            if !terminal.vt.render_held() {
+                terminal.render_hold_deadline = None;
+            }
+            was_held && !terminal.vt.render_held()
+        };
+        if released {
+            self.queue_frame_immediate(terminal_id);
+        } else {
+            self.queue_frame(terminal_id);
         }
-        if let Err(error) = terminal.vt.resize(size.0, size.1) {
-            eprintln!("griz-core: terminal {terminal_id} render resize: {error}");
-            return;
-        }
-        if terminal.exited.is_none()
-            && let Err(error) = terminal.session.resize(size.0, size.1)
-        {
-            // A shell may exit between the command and its wait notification.
-            eprintln!("griz-core: terminal {terminal_id} PTY resize: {error}");
-        }
-        terminal.grid = size;
-        self.queue_frame(terminal_id);
     }
 
     fn queue_frame(&mut self, terminal_id: TerminalId) {
+        self.queue_frame_at(terminal_id, false);
+    }
+
+    fn queue_frame_immediate(&mut self, terminal_id: TerminalId) {
+        self.queue_frame_at(terminal_id, true);
+    }
+
+    fn queue_frame_at(&mut self, terminal_id: TerminalId, immediate: bool) {
         if self.clients.is_empty()
             || (!self.catalog_dirty && !self.terminal_is_observed(terminal_id))
         {
@@ -1321,13 +1432,64 @@ impl Service {
         }
         self.dirty.insert(terminal_id);
         // Flush the first output after idle immediately. Only sustained output
-        // waits for the next frame boundary; do not add a fresh 16 ms to every key.
+        // waits for the next frame boundary; a hold release always publishes now.
         let now = Instant::now();
-        let deadline = output_frame_deadline(self.last_output_frame, now);
+        let deadline = if immediate {
+            now
+        } else {
+            output_frame_deadline(self.last_output_frame, now)
+        };
         self.frame_deadline = Some(
             self.frame_deadline
                 .map_or(deadline, |old| old.min(deadline)),
         );
+    }
+
+    fn next_render_hold_deadline(&self) -> Option<Instant> {
+        self.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.terminals)
+            .filter_map(|terminal| terminal.render_hold_deadline)
+            .min()
+    }
+
+    fn recover_expired_render_holds(&mut self) {
+        let now = Instant::now();
+        let expired = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.terminals)
+            .filter(|terminal| {
+                terminal
+                    .render_hold_deadline
+                    .is_some_and(|deadline| deadline <= now)
+            })
+            .map(|terminal| terminal.id)
+            .collect::<Vec<_>>();
+        for terminal_id in expired {
+            let Some((workspace, terminal)) = self.terminal_location(terminal_id) else {
+                continue;
+            };
+            let recovered = {
+                let terminal = &mut self.workspaces[workspace].terminals[terminal];
+                if terminal.vt.render_held()
+                    && let Err(error) = terminal.vt.end_render_hold()
+                {
+                    eprintln!(
+                        "griz-core: terminal {terminal_id} synchronized-output timeout: {error}"
+                    );
+                }
+                let recovered = !terminal.vt.render_held();
+                // Do not busy-poll a failed recovery. Retry at the same bounded interval;
+                // reset, resize, exit, or later output may also clear the callback state.
+                terminal.render_hold_deadline =
+                    (!recovered).then(|| Instant::now() + RENDER_HOLD_TIMEOUT);
+                recovered
+            };
+            if recovered {
+                self.queue_frame_immediate(terminal_id);
+            }
+        }
     }
 
     fn flush_dirty(&mut self) -> Result<()> {
@@ -1387,9 +1549,9 @@ impl Service {
         let mut screens: HashMap<TerminalId, Screen> = HashMap::new();
         for terminal_id in terminal_ids {
             if let Some((workspace_index, terminal_index)) = self.terminal_location(terminal_id) {
-                let screen = self.workspaces[workspace_index].terminals[terminal_index]
-                    .vt
-                    .screen()?;
+                let terminal = &mut self.workspaces[workspace_index].terminals[terminal_index];
+                let screen =
+                    capture_completed_screen(&mut terminal.vt, &mut terminal.completed_screen)?;
                 screens.insert(terminal_id, screen);
             }
         }
@@ -1422,17 +1584,42 @@ impl Service {
                 })
                 .map(Box::new);
             let visible = self.visible_terminal_ids(client_id);
+            // Completed grids are large. Keep only this tab's real panes rather than
+            // multiplying MAX_TERMINALS full screens by every attached client. On
+            // returning to a held inactive pane, use its completed live fallback.
+            self.clients
+                .get_mut(&client_id)
+                .unwrap()
+                .completed_screens
+                .retain(|id, _| visible.contains(id));
             let mut terminals: Vec<_> = frames
                 .into_iter()
                 .filter(|frame| visible.contains(&frame.id))
                 .collect();
-            // Previews stay live; only real panes use this client's history.
+            // Previews use the terminal's completed live frame. Real panes preserve this
+            // client's independently scrolled completed frame throughout a hold.
             for frame in &mut terminals {
                 let (workspace, terminal) = self.terminal_location(frame.id).unwrap();
-                if let Some(viewport) = self.clients[&client_id].viewports.get(&frame.id) {
-                    frame.screen = self.workspaces[workspace].terminals[terminal]
-                        .vt
-                        .screen_at(viewport)?;
+                let held = self.workspaces[workspace].terminals[terminal]
+                    .vt
+                    .render_held();
+                if held {
+                    frame.screen = completed_pane_screen(
+                        true,
+                        self.clients[&client_id].completed_screens.get(&frame.id),
+                        &frame.screen,
+                    );
+                } else {
+                    if let Some(viewport) = self.clients[&client_id].viewports.get(&frame.id) {
+                        frame.screen = self.workspaces[workspace].terminals[terminal]
+                            .vt
+                            .screen_at(viewport)?;
+                    }
+                    self.clients
+                        .get_mut(&client_id)
+                        .unwrap()
+                        .completed_screens
+                        .insert(frame.id, frame.screen.clone());
                 }
             }
             let terminal = active_terminal
@@ -1535,6 +1722,22 @@ impl Service {
                     })
             })
             .unwrap_or_else(|| self.default_cwd.clone())
+    }
+
+    fn follow_live(&mut self, client_id: ClientId, terminal_id: TerminalId) {
+        let completed = self
+            .terminal_location(terminal_id)
+            .map(|(workspace, terminal)| {
+                self.workspaces[workspace].terminals[terminal]
+                    .completed_screen
+                    .clone()
+            });
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.viewports.remove(&terminal_id);
+            if let Some(screen) = completed {
+                client.completed_screens.insert(terminal_id, screen);
+            }
+        }
     }
 
     fn active_terminal(&self, client_id: ClientId) -> Option<TerminalId> {

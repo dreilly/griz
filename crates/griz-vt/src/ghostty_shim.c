@@ -65,6 +65,7 @@ struct GrizVt {
     size_t responses_cap;
     GhosttyResult responses_error;
     bool fail_next_capture_allocation;
+    bool render_held;
     void (*program_status)(void*, const GhosttyTerminalProgramStatus*);
     void (*prompt_start)(void*);
     void* status_userdata;
@@ -89,6 +90,18 @@ static void griz_semantic_prompt(
     struct GrizVt* vt = userdata;
     if (event->kind == GHOSTTY_SEMANTIC_PROMPT_PROMPT_START) {
         vt->prompt_start(vt->status_userdata);
+    }
+}
+
+static void griz_render_hold(
+    GhosttyTerminal terminal,
+    void* userdata,
+    bool held
+) {
+    (void)terminal;
+    struct GrizVt* vt = userdata;
+    if (vt != NULL) {
+        vt->render_held = held;
     }
 }
 
@@ -232,6 +245,13 @@ int griz_vt_new(
         GHOSTTY_TERMINAL_OPT_WRITE_PTY,
         (const void*)griz_write_pty
     );
+    if (result == GHOSTTY_SUCCESS) {
+        result = ghostty_terminal_set(
+            vt->terminal,
+            GHOSTTY_TERMINAL_OPT_RENDER_HOLD,
+            (const void*)griz_render_hold
+        );
+    }
     if (result != GHOSTTY_SUCCESS) {
         griz_vt_free_partial(vt);
         return result;
@@ -270,6 +290,34 @@ int griz_vt_resize(struct GrizVt* vt, uint16_t cols, uint16_t rows) {
         return GHOSTTY_INVALID_VALUE;
     }
     return ghostty_terminal_resize(vt->terminal, cols, rows, 0, 0);
+}
+
+uint8_t griz_vt_render_held(const struct GrizVt* vt) {
+    return vt != NULL && vt->render_held ? 1 : 0;
+}
+
+int griz_vt_end_render_hold(struct GrizVt* vt) {
+    if (vt == NULL) {
+        return GHOSTTY_INVALID_VALUE;
+    }
+    if (!vt->render_held) {
+        return GHOSTTY_SUCCESS;
+    }
+
+    GhosttyTerminalModeConfig config = {
+        .mode = GHOSTTY_MODE_SYNCHRONIZED_OUTPUT,
+        .value = false,
+    };
+    GhosttyResult result = ghostty_terminal_set(
+        vt->terminal,
+        GHOSTTY_TERMINAL_OPT_MODE,
+        &config
+    );
+    // Ghostty documents that host-side mode changes do not invoke render_hold.
+    if (result == GHOSTTY_SUCCESS) {
+        vt->render_held = false;
+    }
+    return result;
 }
 
 // Viewports are client-owned tracked references. Keep the terminal at the live
