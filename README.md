@@ -408,6 +408,17 @@ that Rune did not provide.
   place, and typing returns to the live terminal. Hold **Shift** while scrolling to
   browse terminal history instead of sending wheel events to a mouse-aware program.
   Alternate-screen programs have no terminal history of their own.
+- Each core-owned terminal explicitly retains up to **10,000 physical history lines**
+  or an estimated **8 MiB of Ghostty page storage**, whichever limit is reached first.
+  The line bound keeps ordinary command history useful, while the byte bound contains
+  narrow, wide-glyph, and style-heavy workloads. Wrapped rows count as physical lines.
+  Ghostty prunes only complete pages (currently about 400 KiB), so retained lines and
+  allocation can exceed the configured limits by roughly one page; this is an
+  operational bound, not an exact allocator or RSS guarantee. At the 64-terminal app
+  limit, the configured byte budgets total 512 MiB, plus page-granularity overhead
+  (roughly 25 MiB if every terminal is at the boundary), active/alternate screens,
+  styles, PTYs, and other process allocations. There is no scrollback settings UI yet;
+  idle history compression is deferred until real workloads are measured.
 - Drag across terminal text to highlight it. Releasing the mouse automatically copies
   the selection and shows a **Copied to clipboard** toast near the bottom for two seconds.
   Double-click selects a word; triple-click selects a visible line. Soft-wrapped

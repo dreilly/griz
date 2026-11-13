@@ -136,17 +136,23 @@ semantics to Ghostty, selecting across history with autoscroll, and semantic
 command-output selection remain separate work using `selection.h` and
 `formatter.h`.
 
-### 6. Configure a deliberate scrollback budget
+### 6. Configure a deliberate scrollback budget — addressed
 
-**Confirmed:** `griz_vt_new` does not set a scrollback limit. The bundled
-`terminal.h` documents a default 10,000-byte budget rounded up to one page
-(approximately 400 KB), so retained history is shallow and workload-dependent.
+Every `griz-vt` terminal now sets both Ghostty limits during initialization:
+10,000 physical history lines and an estimated 8 MiB page allocation per terminal,
+whichever is reached first. The line limit provides useful ordinary shell history;
+the byte limit bounds narrow, wide-glyph, and style-heavy workloads. The core owns
+one emulator and budget per terminal, and all initial, workspace/tab, split, and
+replacement-shell creation paths use the same constructor.
 
-**Ghostty support:** `GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES`,
-`GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES`, and idle compression APIs.
-
-**Suggested scope:** Choose an explicit memory/line budget, expose a user setting
-if useful, and consider incremental compression only after measuring workloads.
+The bundled `terminal.h` defines both option values as `size_t*` and documents
+whole-page pruning. Limits are therefore approximate: byte allocation can exceed the
+configured value by about one page (currently roughly 400 KiB), and retained physical
+lines can exceed their value by the remaining rows in a page. With Griz's 64-terminal
+limit, configured scrollback byte budgets total 512 MiB, plus page-granularity and
+active-screen/emulator overhead; this is a planning bound, not a hard allocator or RSS
+guarantee. There is no user setting yet. Idle compression remains deferred until
+workload and latency measurements justify its scheduling complexity.
 
 ## Major compatibility and capability gaps
 

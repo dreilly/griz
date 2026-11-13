@@ -30,6 +30,34 @@ const OUT_OF_MEMORY: c_int = -1;
 const INVALID_VALUE: c_int = -2;
 const REJECTED: c_int = -7;
 
+/// Default estimated scrollback page allocation per terminal.
+///
+/// Ghostty prunes complete pages, so actual allocation can exceed this by
+/// roughly one page. The physical-line limit may be reached first.
+pub const DEFAULT_SCROLLBACK_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// Default physical history rows retained per terminal.
+///
+/// Ghostty prunes complete pages, so actual retained rows can exceed this
+/// limit by the rows remaining in an eligible page. The byte limit may be
+/// reached first for narrow, wide-glyph, or style-heavy history.
+pub const DEFAULT_SCROLLBACK_MAX_LINES: usize = 10_000;
+
+#[derive(Clone, Copy)]
+struct ScrollbackLimits {
+    max_bytes: usize,
+    max_lines: usize,
+}
+
+impl Default for ScrollbackLimits {
+    fn default() -> Self {
+        Self {
+            max_bytes: DEFAULT_SCROLLBACK_MAX_BYTES,
+            max_lines: DEFAULT_SCROLLBACK_MAX_LINES,
+        }
+    }
+}
+
 #[repr(C)]
 struct GrizVt {
     _private: [u8; 0],
@@ -78,6 +106,8 @@ unsafe extern "C" {
     fn griz_vt_new(
         cols: u16,
         rows: u16,
+        scrollback_max_bytes: usize,
+        scrollback_max_lines: usize,
         out: *mut *mut GrizVt,
         report: extern "C" fn(*mut c_void, *const program_status::RawReport),
         prompt: extern "C" fn(*mut c_void),
@@ -213,8 +243,17 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Creates a terminal with the given cell dimensions.
+    /// Creates a terminal with the given cell dimensions and Griz's bounded
+    /// per-terminal scrollback defaults.
     pub fn new(cols: u16, rows: u16) -> Result<Self, Error> {
+        Self::new_with_scrollback_limits(cols, rows, ScrollbackLimits::default())
+    }
+
+    fn new_with_scrollback_limits(
+        cols: u16,
+        rows: u16,
+        limits: ScrollbackLimits,
+    ) -> Result<Self, Error> {
         let mut raw = std::ptr::null_mut();
         let mut statuses = Box::<program_status::Records>::default();
         // SAFETY: out is valid; userdata is a stable Box kept alive until after
@@ -223,6 +262,8 @@ impl Terminal {
             griz_vt_new(
                 cols,
                 rows,
+                limits.max_bytes,
+                limits.max_lines,
                 &mut raw,
                 program_status::report,
                 program_status::prompt,

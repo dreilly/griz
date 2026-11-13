@@ -186,6 +186,8 @@ static void griz_vt_free_partial(struct GrizVt* vt) {
 int griz_vt_new(
     uint16_t cols,
     uint16_t rows,
+    size_t scrollback_max_bytes,
+    size_t scrollback_max_lines,
     struct GrizVt** out,
     void (*program_status)(void*, const GhosttyTerminalProgramStatus*),
     void (*prompt_start)(void*),
@@ -205,6 +207,22 @@ int griz_vt_new(
     vt->prompt_start = prompt_start;
     vt->status_userdata = status_userdata;
     GhosttyResult result = ghostty_terminal_new(NULL, &vt->terminal, cols, rows);
+    if (result != GHOSTTY_SUCCESS) {
+        griz_vt_free_partial(vt);
+        return result;
+    }
+    result = ghostty_terminal_set(
+        vt->terminal,
+        GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
+        &scrollback_max_bytes
+    );
+    if (result == GHOSTTY_SUCCESS) {
+        result = ghostty_terminal_set(
+            vt->terminal,
+            GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
+            &scrollback_max_lines
+        );
+    }
     if (result != GHOSTTY_SUCCESS) {
         griz_vt_free_partial(vt);
         return result;
