@@ -132,6 +132,7 @@ fn theme_card(index: usize, theme: Theme, state: &State, p: &Palette) -> El {
 
 fn workspace_accent(state: &State, p: &Palette) -> El {
     let selected = state.settings.default_workspace_accent;
+    let random = state.settings.random_workspace_accent;
     let mut swatches = row()
         .key("settings-accent-colors")
         .w_full()
@@ -147,8 +148,8 @@ fn workspace_accent(state: &State, p: &Palette) -> El {
             el().key(format!("settings-accent-{name}"))
                 .role("radio")
                 .label(format!("{name} default workspace accent"))
-                .checked(accent == selected)
-                .focus_selected(accent == selected)
+                .checked(accent == selected && !random)
+                .focus_selected(accent == selected && !random)
                 .focusable(true)
                 .help(name)
                 .size(36.0, 32.0)
@@ -157,7 +158,7 @@ fn workspace_accent(state: &State, p: &Palette) -> El {
                 .fill(color.alpha(0.16))
                 .border(
                     1.0,
-                    if accent == selected {
+                    if accent == selected && !random {
                         color
                     } else {
                         Color::TRANSPARENT
@@ -171,16 +172,38 @@ fn workspace_accent(state: &State, p: &Palette) -> El {
                         .fill(color)
                         .center()
                         .children(
-                            (accent == selected)
+                            (accent == selected && !random)
                                 .then(|| text("✓").font(TextStyle::new(12.0, 600.0)).color(p.bg)),
                         ),
                 )
                 .on_press(move |s: &mut State| {
                     s.settings.default_workspace_accent = accent;
+                    s.settings.random_workspace_accent = false;
                     s.settings_changed();
                 }),
         );
     }
+    swatches = swatches.child(
+        el().key("settings-accent-random")
+            .role("radio")
+            .label("Random default workspace accent")
+            .checked(random)
+            .focus_selected(random)
+            .focusable(true)
+            .help("Choose a random palette color for each new workspace")
+            .h(32.0)
+            .w(p.input.size * 4.5 + 20.0)
+            .center()
+            .radius(5.0)
+            .border(1.0, if random { p.accent } else { Color::TRANSPARENT })
+            .hover(p.accent.alpha(0.25))
+            .focus_ring(2.0, 2.0, p.accent)
+            .child(text("Random").font(p.input).color(p.ink))
+            .on_press(|s: &mut State| {
+                s.settings.random_workspace_accent = true;
+                s.settings_changed();
+            }),
+    );
     col()
         .w_full()
         .gap(12.0)
@@ -193,10 +216,14 @@ fn workspace_accent(state: &State, p: &Palette) -> El {
                 .child(text("Default workspace accent").font(p.label).color(p.ink))
                 .child(el().grow(1.0))
                 .child(
-                    text(rune::tok::ACCENT_NAMES[crate::workspace_ui::accent_index(selected)])
-                        .key("settings-accent-name")
-                        .font(p.input)
-                        .color(crate::workspace_ui::accent_color(selected)),
+                    text(if random {
+                        "Random"
+                    } else {
+                        rune::tok::ACCENT_NAMES[crate::workspace_ui::accent_index(selected)]
+                    })
+                    .key("settings-accent-name")
+                    .font(p.input)
+                    .color(crate::workspace_ui::accent_color(selected)),
                 ),
         )
         .child(swatches)
@@ -449,6 +476,7 @@ fn appearance(state: &State, p: &Palette) -> El {
                         s.settings.theme = defaults.theme;
                         s.settings.terminal_whites = defaults.terminal_whites;
                         s.settings.default_workspace_accent = defaults.default_workspace_accent;
+                        s.settings.random_workspace_accent = defaults.random_workspace_accent;
                         s.settings_changed();
                     }),
             ),

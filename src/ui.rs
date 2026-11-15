@@ -568,7 +568,7 @@ fn empty_workspaces(state: &State, p: &Palette, cx: &Cx<State>) -> El {
                 .on_press_tx(|s: &mut State, tx| {
                     s.change(Command::CreateWorkspace {
                         name: String::new(),
-                        accent: s.settings.default_workspace_accent,
+                        accent: s.new_workspace_accent(),
                     });
                     tx.blur();
                 }),

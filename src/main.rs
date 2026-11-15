@@ -443,6 +443,18 @@ impl State {
             .is_some_and(|t| t.exited.is_some())
     }
 
+    fn new_workspace_accent(&self) -> griz_protocol::WorkspaceAccent {
+        // Workspace IDs follow creation order, independent of selection or sidebar order.
+        let previous = self.snapshot.as_ref().and_then(|snapshot| {
+            snapshot
+                .workspaces
+                .iter()
+                .max_by_key(|workspace| workspace.id)
+                .map(|workspace| workspace.accent)
+        });
+        self.settings.new_workspace_accent(previous)
+    }
+
     fn ready(&self) -> bool {
         self.online && !self.offline && self.pending.is_none()
     }
@@ -459,7 +471,7 @@ impl State {
             self.palette.reset_preview();
             self.client = Some(client::Client::start(
                 self.grid,
-                self.settings.default_workspace_accent,
+                self.new_workspace_accent(),
                 wake.clone(),
             ));
             self.pending = None;
@@ -888,7 +900,7 @@ impl State {
         let command = match self.dialog.clone() {
             Some(Dialog::NewWorkspace) => Command::CreateWorkspace {
                 name: value,
-                accent: self.settings.default_workspace_accent,
+                accent: self.new_workspace_accent(),
             },
             Some(Dialog::RenameWorkspace(workspace_id)) => Command::RenameWorkspace {
                 workspace_id,

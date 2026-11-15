@@ -271,6 +271,7 @@ pub struct Settings {
     pub theme: Theme,
     pub terminal_whites: TerminalWhites,
     pub default_workspace_accent: WorkspaceAccent,
+    pub random_workspace_accent: bool,
     /// Missing means the default; an empty string explicitly disables a shortcut.
     bindings: BTreeMap<String, String>,
     prefix: Option<Chord>,
@@ -285,6 +286,7 @@ impl Default for Settings {
             theme: Theme::default(),
             terminal_whites: TerminalWhites::default(),
             default_workspace_accent: WorkspaceAccent::Green,
+            random_workspace_accent: true,
             bindings: BTreeMap::new(),
             prefix: Some(Chord::parse("ctrl+b").unwrap()),
             prefix_bindings: BTreeMap::new(),
@@ -292,7 +294,29 @@ impl Default for Settings {
     }
 }
 
+/// Resolve only when creating a workspace, never during rendering or selection.
+pub(crate) fn random_accent(previous: Option<WorkspaceAccent>) -> WorkspaceAccent {
+    use std::hash::BuildHasher;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let sample = std::collections::hash_map::RandomState::new()
+        .hash_one(SEQUENCE.fetch_add(1, Ordering::Relaxed));
+    let choices: Vec<_> = WorkspaceAccent::ALL
+        .into_iter()
+        .filter(|accent| Some(*accent) != previous)
+        .collect();
+    choices[sample as usize % choices.len()]
+}
+
 impl Settings {
+    pub fn new_workspace_accent(&self, previous: Option<WorkspaceAccent>) -> WorkspaceAccent {
+        if self.random_workspace_accent {
+            random_accent(previous)
+        } else {
+            self.default_workspace_accent
+        }
+    }
+
     /// A shared type scale: preserve the hierarchy between labels, headings and terminal text.
     pub fn ui_font(&self, mut style: rune::TextStyle) -> rune::TextStyle {
         let scale = self.font_size / 14.0;
@@ -367,9 +391,16 @@ impl Settings {
             }
         }
         if let Some(value) = values.get("default_workspace_accent") {
-            match serde_json::from_value::<WorkspaceAccent>(value.clone()) {
-                Ok(accent) => settings.default_workspace_accent = accent,
-                Err(_) => invalid = true,
+            if value.as_str() == Some("random") {
+                settings.random_workspace_accent = true;
+            } else {
+                match serde_json::from_value::<WorkspaceAccent>(value.clone()) {
+                    Ok(accent) => {
+                        settings.default_workspace_accent = accent;
+                        settings.random_workspace_accent = false;
+                    }
+                    Err(_) => invalid = true,
+                }
             }
         }
         // Load direct overrides before validating the prefix, so disabled/swapped
@@ -468,7 +499,11 @@ impl Settings {
         value.remove("workspace_button_style");
         value.insert(
             "default_workspace_accent".into(),
-            serde_json::to_value(self.default_workspace_accent).unwrap(),
+            if self.random_workspace_accent {
+                "random".into()
+            } else {
+                serde_json::to_value(self.default_workspace_accent).unwrap()
+            },
         );
         value.insert(
             "keybindings".into(),

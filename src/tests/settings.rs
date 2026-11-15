@@ -83,6 +83,12 @@ fn appearance_is_live_reflows_the_pty_and_can_be_reset() {
     });
     rt.frame(0.0);
     click(&mut rt, "settings-appearance-reset");
+    assert!(rt.state.settings.random_workspace_accent);
+    assert!(
+        Settings::from_store(&rt.state.prefs)
+            .0
+            .random_workspace_accent
+    );
     assert_eq!(rt.state.settings.font_size, 14.0);
     assert_eq!(rt.state.settings.font, Font::Menlo);
     assert_eq!(rt.state.settings.theme, Theme::Dark);
@@ -90,7 +96,7 @@ fn appearance_is_live_reflows_the_pty_and_can_be_reset() {
 }
 
 #[test]
-fn default_workspace_accent_is_green_live_and_persistent_without_recoloring_existing_workspaces() {
+fn default_workspace_accent_is_random_live_and_persistent_without_recoloring_existing_workspaces() {
     let (state, outgoing) = mock();
     let mut rt = make_runtime(state, (1100.0, 720.0));
     open_settings(&mut rt);
@@ -152,6 +158,7 @@ fn workspace_creation_uses_the_default_accent_for_named_blank_and_empty_state_ac
     for named in [true, false] {
         let (mut state, outgoing) = mock();
         state.settings.default_workspace_accent = WorkspaceAccent::Purple;
+        state.settings.random_workspace_accent = false;
         let mut rt = make_runtime(state, (1100.0, 720.0));
         commands(&outgoing);
         click(&mut rt, "new-workspace");
@@ -167,6 +174,7 @@ fn workspace_creation_uses_the_default_accent_for_named_blank_and_empty_state_ac
     }
     let (mut state, outgoing) = mock();
     state.settings.default_workspace_accent = WorkspaceAccent::Orange;
+    state.settings.random_workspace_accent = false;
     let mut empty = snapshot();
     empty.workspaces.clear();
     empty.active_workspace = 0;
@@ -304,6 +312,7 @@ fn preferences_round_trip_with_disabled_bindings_and_missing_defaults() {
     settings.theme = Theme::Midnight;
     settings.terminal_whites = TerminalWhites::Softer;
     settings.default_workspace_accent = WorkspaceAccent::Purple;
+    settings.random_workspace_accent = false;
     settings
         .bind(Action::ToggleSidebar, Some(Chord::parse("mod+j").unwrap()))
         .unwrap();
@@ -441,6 +450,7 @@ fn appearance_controls_fit_small_windows_and_large_fonts_without_horizontal_over
             "settings-accent-orange",
             "settings-accent-green",
             "settings-accent-graphite",
+            "settings-accent-random",
             "settings-whites-Original",
             "settings-whites-Soft",
             "settings-whites-Softer",
@@ -468,9 +478,10 @@ fn appearance_controls_fit_small_windows_and_large_fonts_without_horizontal_over
 }
 
 #[test]
-fn appearance_reset_restores_the_default_workspace_accent_to_green() {
+fn appearance_reset_restores_the_default_workspace_accent_to_random() {
     let mut state = State::default();
     state.settings.default_workspace_accent = WorkspaceAccent::Purple;
+    state.settings.random_workspace_accent = false;
     let mut rt = make_runtime(state, (1100.0, 720.0));
     open_settings(&mut rt);
     rt.update(|_, tx| {
@@ -479,6 +490,12 @@ fn appearance_reset_restores_the_default_workspace_accent_to_green() {
     });
     rt.frame(0.0);
     click(&mut rt, "settings-appearance-reset");
+    assert!(rt.state.settings.random_workspace_accent);
+    assert!(
+        Settings::from_store(&rt.state.prefs)
+            .0
+            .random_workspace_accent
+    );
     assert_eq!(
         rt.state.settings.default_workspace_accent,
         WorkspaceAccent::Green
@@ -507,4 +524,119 @@ fn save_failure_is_visible_but_the_live_preference_still_applies() {
     assert!(rt.state.settings_error.is_some());
     assert!(rt.find("settings-error").is_some());
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn random_accent_setting_persists_without_recoloring_existing_workspaces() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    open_settings(&mut rt);
+    assert!(rt.state.settings.random_workspace_accent);
+    click(&mut rt, "settings-accent-blue");
+    assert!(!rt.state.settings.random_workspace_accent);
+    commands(&outgoing);
+    click(&mut rt, "settings-accent-random");
+    assert!(rt.state.settings.random_workspace_accent);
+    assert!(
+        Settings::from_store(&rt.state.prefs)
+            .0
+            .random_workspace_accent
+    );
+    assert!(commands(&outgoing).is_empty());
+    assert!(
+        rt.state
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .workspaces
+            .iter()
+            .all(|w| w.accent == WorkspaceAccent::Green)
+    );
+    click(&mut rt, "settings-accent-purple");
+    assert!(
+        !Settings::from_store(&rt.state.prefs)
+            .0
+            .random_workspace_accent
+    );
+    assert_eq!(
+        rt.state.settings.new_workspace_accent(None),
+        WorkspaceAccent::Purple
+    );
+}
+
+#[test]
+fn random_workspace_creation_resolves_to_a_concrete_palette_color() {
+    let settings = Settings::default();
+    assert!(settings.random_workspace_accent);
+    let samples: Vec<_> = (0..64)
+        .map(|_| settings.new_workspace_accent(None))
+        .collect();
+    assert!(
+        samples
+            .iter()
+            .all(|accent| WorkspaceAccent::ALL.contains(accent))
+    );
+    assert!(samples.iter().any(|accent| *accent != samples[0]));
+    for named in [true, false] {
+        let (state, outgoing) = mock();
+        let mut rt = make_runtime(state, (1100.0, 720.0));
+        commands(&outgoing);
+        click(&mut rt, "new-workspace");
+        if named {
+            click(&mut rt, "dialog-input");
+            rt.key(Key::Text("Random project".into()).into());
+            rt.frame(0.0);
+        }
+        click(&mut rt, "dialog-submit");
+        assert!(commands(&outgoing).iter().any(|(_, command)| matches!(command, Command::CreateWorkspace { accent, .. } if WorkspaceAccent::ALL.contains(accent))));
+    }
+}
+
+#[test]
+fn random_accents_never_repeat_the_previous_workspace_color() {
+    let settings = Settings::default();
+    for previous in WorkspaceAccent::ALL {
+        for _ in 0..128 {
+            let next = settings.new_workspace_accent(Some(previous));
+            assert_ne!(next, previous);
+            assert!(WorkspaceAccent::ALL.contains(&next));
+        }
+    }
+    let mut previous = None;
+    for _ in 0..256 {
+        let next = settings.new_workspace_accent(previous);
+        assert_ne!(Some(next), previous);
+        previous = Some(next);
+    }
+}
+
+#[test]
+fn new_workspace_excludes_the_latest_workspace_not_the_selected_one() {
+    let (mut state, outgoing) = mock();
+    let mut view = snapshot();
+    view.workspaces[0].accent = WorkspaceAccent::Purple;
+    view.workspaces[1].accent = WorkspaceAccent::Orange;
+    view.active_workspace = view.workspaces[0].id;
+    state.apply(view);
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    commands(&outgoing);
+    click(&mut rt, "new-workspace");
+    click(&mut rt, "dialog-submit");
+    assert!(
+        commands(&outgoing)
+            .iter()
+            .any(|(_, command)| matches!(command,
+        Command::CreateWorkspace { accent, .. } if *accent != WorkspaceAccent::Orange))
+    );
+}
+
+#[test]
+fn fixed_accent_can_repeat() {
+    let mut settings = Settings::default();
+    settings.random_workspace_accent = false;
+    settings.default_workspace_accent = WorkspaceAccent::Orange;
+    assert_eq!(
+        settings.new_workspace_accent(Some(WorkspaceAccent::Orange)),
+        WorkspaceAccent::Orange
+    );
 }

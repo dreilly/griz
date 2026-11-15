@@ -166,7 +166,7 @@ connection, and a scratch shell, all in unrelated directories.
   **⌥⌘→ / ⌥⌘←** cycle pane focus within the current tab.
 - Right-click any workspace for **Rename workspace…**,
   **Close workspace…**, and an **Accent color** swatch row: blue, purple, pink, orange,
-  green, or graphite, using Rune’s accent palette. Green is the default. The workspace’s
+  green, or graphite, using Rune’s accent palette. New workspaces use the saved default below. The workspace’s
   selected sidebar entry, active terminal tab, and pane outline/focus highlight share
   its accent; terminal ANSI colors are unchanged. Color changes sync to every connected
   window and survive GUI reconnects for the lifetime of the workspace in the service.
@@ -347,8 +347,11 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   explicit ANSI/RGB whites from applications, while preserving dim grays (up to
   `#A0A0A0`), chromatic colors, and all backgrounds. The local, live adjustment also
   applies to terminal previews; it never changes terminal data or copied text.
-  **Default workspace accent** starts at green; choose blue, purple, pink, orange,
-  green, or graphite for workspaces created from this GUI. Existing workspaces keep
+  **Default workspace accent** starts at **Random**, choosing one of the six palette
+  colors once for each new workspace, excluding the most recently created existing
+  workspace’s color so consecutive new workspaces do not repeat. You can instead choose blue, purple, pink,
+  orange, green, or graphite as a fixed default. Existing saved fixed defaults are
+  preserved. Existing workspaces keep
   their own colors, which can still be changed from their context menu. The default
   is saved locally with the other appearance preferences; the chosen color becomes
   shared workspace state when a workspace is created. A fresh core's initial workspace
