@@ -1,5 +1,6 @@
 //! Native Rune client. Workspaces, PTYs and terminal emulators live in griz-core.
 mod agents_ui;
+mod breakout;
 mod client;
 mod command_palette;
 mod harness_icons;
@@ -63,6 +64,7 @@ struct State {
     settings_error: Option<String>,
     shortcut_search: TextEdit,
     palette: command_palette::PaletteState,
+    breakout: Option<breakout::Game>,
     completion_sweeps: agents_ui::CompletionSweeps,
     terminal_mouse: terminal_mouse::Interaction,
     /// Per-window presentation only; stable tab IDs survive closing their first pane.
@@ -101,6 +103,7 @@ impl Default for State {
             settings_error: None,
             shortcut_search: TextEdit::new(""),
             palette: command_palette::PaletteState::default(),
+            breakout: None,
             completion_sweeps: Default::default(),
             terminal_mouse: Default::default(),
             zoomed_tabs: HashSet::new(),
@@ -113,7 +116,7 @@ impl Default for State {
 
 impl State {
     fn open_settings(&mut self, tx: &mut Tx) {
-        if self.paste_confirmation.is_some() {
+        if self.paste_confirmation.is_some() || self.breakout.is_some() {
             return;
         }
         terminal_mouse::cancel(self);
@@ -489,6 +492,7 @@ impl State {
             || self.dialog.is_some()
             || self.paste_confirmation.is_some()
             || self.palette.is_open()
+            || self.breakout.is_some()
         {
             return;
         }
@@ -548,6 +552,7 @@ impl State {
             || self.dialog.is_some()
             || self.paste_confirmation.is_some()
             || self.palette.is_open()
+            || self.breakout.is_some()
             || self.pending.is_some()
             || self.offline
     }
@@ -657,6 +662,7 @@ impl State {
             || self.settings_open
             || self.dialog.is_some()
             || self.palette.is_open()
+            || self.breakout.is_some()
         {
             self.send(Command::CancelPaste {
                 paste_id: confirmation.paste_id,
@@ -843,7 +849,11 @@ impl State {
     }
 
     fn open_dialog(&mut self, dialog: Dialog, tx: &mut Tx) {
-        if self.settings_open || self.paste_confirmation.is_some() || !self.ready() {
+        if self.settings_open
+            || self.paste_confirmation.is_some()
+            || self.breakout.is_some()
+            || !self.ready()
+        {
             return;
         }
         let value = match &dialog {
@@ -900,10 +910,11 @@ impl State {
     }
 }
 
-fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
+fn poll(state: &mut State, now: f64, tx: &mut Tx) -> bool {
+    let game_changed = breakout::poll(state, now, tx);
     let toast_changed = terminal_mouse::poll(state, tx);
     let Some(client) = &state.client else {
-        return toast_changed;
+        return game_changed || toast_changed;
     };
     let (snapshot, paste_confirmation, error, disconnected) = {
         let mut inbox = client.inbox.lock().unwrap();
@@ -914,7 +925,8 @@ fn poll(state: &mut State, _: f64, tx: &mut Tx) -> bool {
             std::mem::take(&mut inbox.disconnected),
         )
     };
-    let changed = toast_changed
+    let changed = game_changed
+        || toast_changed
         || snapshot.is_some()
         || paste_confirmation.is_some()
         || error.is_some()
@@ -1116,6 +1128,9 @@ fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
     if state.paste_confirmation.is_some() {
         return true;
     }
+    if breakout::key(state, event, tx) {
+        return true;
+    }
     if panes::gesture_key(state, event) {
         return true;
     }
@@ -1135,6 +1150,7 @@ fn on_ime(state: &mut State, event: &Ime, tx: &mut Tx) -> bool {
         || state.dialog.is_some()
         || state.paste_confirmation.is_some()
         || state.palette.is_open()
+        || state.breakout.is_some()
         || !terminal_focus(state, tx)
     {
         return false;

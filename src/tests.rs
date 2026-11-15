@@ -4,6 +4,8 @@ mod agent_locations;
 mod agents;
 #[path = "tests/buttons.rs"]
 mod buttons;
+#[path = "tests/breakout.rs"]
+mod breakout_tests;
 #[path = "tests/chrome.rs"]
 mod chrome;
 #[path = "tests/command_palette.rs"]

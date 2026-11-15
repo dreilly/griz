@@ -20,6 +20,7 @@ enum Target {
     TerminalDirectory(WorkspaceId),
     StartShell(TerminalId),
     Reconnect,
+    Breakout,
 }
 
 pub(crate) struct PaletteState {
@@ -93,6 +94,7 @@ impl Entry {
             Target::TerminalDirectory(_) => "palette-terminal-directory".into(),
             Target::StartShell(_) => "palette-start-shell".into(),
             Target::Reconnect => "palette-reconnect".into(),
+            Target::Breakout => "palette-breakout".into(),
         }
     }
 }
@@ -211,6 +213,20 @@ fn entries(state: &State) -> Vec<Entry> {
             }
         }
         Some(Mode::Commands) => {
+            if state
+                .palette
+                .query
+                .text
+                .trim()
+                .eq_ignore_ascii_case("break")
+            {
+                entries.push(Entry::new(
+                    Target::Breakout,
+                    "Take a break",
+                    "Secret workspace · smash the AI stack",
+                    true,
+                ));
+            }
             for action in Action::ALL {
                 if matches!(action, Action::QuickOpen | Action::CommandPalette) {
                     continue;
@@ -401,6 +417,7 @@ fn activate(state: &mut State, target: Target, tx: &mut Tx) {
         Target::TerminalDirectory(id) => state.open_dialog(Dialog::NewTerminal(id), tx),
         Target::StartShell(terminal_id) => state.change(Command::StartShell { terminal_id }),
         Target::Reconnect => state.connect(),
+        Target::Breakout => crate::breakout::open(state, tx),
     }
 }
 

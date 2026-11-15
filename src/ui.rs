@@ -466,6 +466,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 && s.dialog.is_none()
                 && s.paste_confirmation.is_none()
                 && !s.palette.is_open()
+                && s.breakout.is_none()
                 && crate::terminal_focus(s, tx)
             {
                 s.prefix_waiting = false;
@@ -507,6 +508,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .children(dialog(state, &p, cx))
         .children(crate::settings_ui::panel(state, &p))
         .children(crate::command_palette::panel(state, &p, cx))
+        .children(crate::breakout::panel(state, &p, cx))
 }
 
 /// Neutral surfaces for regular actions and transparent tab labels.
