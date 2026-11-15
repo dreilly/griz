@@ -677,11 +677,11 @@ fn dialog(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
             "",
         ),
     };
-    let input = (!matches!(
+    let close_confirmation = matches!(
         dialog,
         Dialog::CloseTerminal(..) | Dialog::CloseWorkspace(..)
-    ))
-    .then(|| {
+    );
+    let input = (!close_confirmation).then(|| {
         text_input(&state.draft, p.input)
             .key("dialog-input")
             .label(if matches!(dialog, Dialog::NewTerminal(_)) {
@@ -706,6 +706,14 @@ fn dialog(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
         }
         _ => true,
     };
+    let mut submit_button = button("dialog-submit", submit, p)
+        .disabled(!valid || !state.ready())
+        .on_press_tx(|s: &mut State, tx| s.submit_dialog(tx));
+    if close_confirmation {
+        // Keep the destructive action visually on the right while making it the
+        // confirmation dialog's initial focus and Return target.
+        submit_button = submit_button.tab_index(1).default_button();
+    }
     Some(
         el().key("dialog-scrim")
             .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
@@ -736,11 +744,7 @@ fn dialog(state: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
                                     tx.blur();
                                 },
                             ))
-                            .child(
-                                button("dialog-submit", submit, p)
-                                    .disabled(!valid || !state.ready())
-                                    .on_press_tx(|s: &mut State, tx| s.submit_dialog(tx)),
-                            ),
+                            .child(submit_button),
                     ),
             ),
     )

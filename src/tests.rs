@@ -765,6 +765,11 @@ fn workspace_close_confirms_the_clicked_id_and_supports_cancellation() {
     assert!(matches!(&rt.state.dialog, Some(Dialog::CloseWorkspace(2, name)) if name == "Other"));
     assert!(rt.find("dialog-input").is_none());
     assert!(!rt.state.draft.focused);
+    assert!(
+        rt.elements()
+            .iter()
+            .any(|e| e.key.as_deref() == Some("dialog-submit") && e.focused)
+    );
     assert!(commands(&outgoing).is_empty());
     click(&mut rt, "dialog-cancel");
     assert!(commands(&outgoing).is_empty());
@@ -774,7 +779,8 @@ fn workspace_close_confirms_the_clicked_id_and_supports_cancellation() {
     rt.update(|s, _| s.apply(snapshot()));
     rt.frame(0.0);
     commands(&outgoing);
-    click(&mut rt, "dialog-submit");
+    rt.key(rune::Key::Enter.into());
+    rt.frame(0.0);
     let sent = commands(&outgoing);
     assert_eq!(sent.len(), 1);
     assert!(matches!(
