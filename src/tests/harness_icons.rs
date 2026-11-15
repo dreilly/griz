@@ -84,7 +84,7 @@ fn harness_logos_match_in_agent_cards_tabs_and_quick_open() {
 }
 
 #[test]
-fn split_tabs_include_background_panes_and_deduplicate_child_harnesses() {
+fn split_tab_marks_follow_the_selected_pane_without_showing_a_pane_count() {
     let (mut state, _) = mock();
     let workspace = &mut state.snapshot.as_mut().unwrap().workspaces[0];
     workspace.tabs = vec![TabInfo {
@@ -102,29 +102,20 @@ fn split_tabs_include_background_panes_and_deduplicate_child_harnesses() {
     workspace.terminals[0].agents = vec![root.clone(), child.clone()];
     workspace.terminals[1].agents = vec![root, child, other];
     let mut rt = make_runtime(state, (1100.0, 720.0));
-    for _ in 0..2 {
-        assert_eq!(
-            crate::harness_icons::for_tab(
-                rt.state.workspace().unwrap(),
-                rt.state.active_tab().unwrap()
-            ),
-            vec![Harness::Pi, Harness::Claude]
-        );
-        assert!(rt.find("tab-1-harness-pi").is_some());
-        assert!(rt.find("tab-1-harness-claude").is_some());
-        assert_eq!(
-            rt.elements()
-                .iter()
-                .filter(|e| e
-                    .key
-                    .as_deref()
-                    .is_some_and(|k| k.starts_with("tab-1-harness-")))
-                .count(),
-            2
-        );
-        rt.update(|s, _| s.snapshot.as_mut().unwrap().active_terminal = Some(2));
-        rt.frame(0.0);
-    }
+
+    assert_text(&rt, "tab-1", "1");
+    assert!(rt.find("tab-1-harness-pi").is_some());
+    assert!(rt.find("tab-1-harness-claude").is_none());
+
+    rt.update(|s, _| s.snapshot.as_mut().unwrap().active_terminal = Some(2));
+    rt.frame(0.0);
+    assert!(rt.find("tab-1-harness-pi").is_some());
+    assert!(rt.find("tab-1-harness-claude").is_some());
+
+    rt.update(|s, _| s.snapshot.as_mut().unwrap().active_terminal = Some(1));
+    rt.frame(0.0);
+    assert!(rt.find("tab-1-harness-pi").is_some());
+    assert!(rt.find("tab-1-harness-claude").is_none());
 }
 
 #[test]

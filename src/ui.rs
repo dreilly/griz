@@ -301,16 +301,13 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 .filter(|_| active)
                 .unwrap_or_else(|| tab.layout.terminal_ids()[0]);
             let terminal = workspace.terminals.iter().find(|t| t.id == target);
-            let pane_count = tab.layout.terminal_ids().len();
             let label = format!(
                 "{}{}",
                 number,
                 if terminal.is_some_and(|t| t.exited.is_some()) {
-                    " · exited".to_owned()
-                } else if pane_count > 1 {
-                    format!(" · {pane_count} panes")
+                    " · exited"
                 } else {
-                    String::new()
+                    ""
                 }
             );
             let terminal_number = workspace
@@ -319,7 +316,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 .position(|t| t.id == target)
                 .map(|i| i + 1)
                 .unwrap_or(number);
-            let harnesses = crate::harness_icons::for_tab(workspace, tab);
+            let harnesses = crate::harness_icons::for_terminals(terminal);
             let harness_names = harnesses
                 .iter()
                 .map(|h| h.name())

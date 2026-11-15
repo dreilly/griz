@@ -62,6 +62,23 @@ fn both_split_directions_have_equal_rounded_cards_with_a_ten_point_gap() {
 }
 
 #[test]
+fn pane_headers_do_not_show_individual_terminal_numbers() {
+    let (rt, _) = split_runtime(SplitDirection::Vertical);
+    let elements = rt.elements();
+    for id in [1, 2] {
+        let header = elements
+            .iter()
+            .position(|e| e.key.as_deref() == Some(&format!("terminal-header-{id}")))
+            .unwrap();
+        assert!(
+            !elements.iter().any(|e| {
+                e.parent == Some(header) && e.text.as_deref() == Some(&id.to_string())
+            })
+        );
+    }
+}
+
+#[test]
 fn every_visible_pane_gets_its_own_pty_dimensions_and_font_updates() {
     for direction in [SplitDirection::Horizontal, SplitDirection::Vertical] {
         let (mut rt, outgoing) = split_runtime(direction);

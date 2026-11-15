@@ -325,7 +325,6 @@ fn tab_numbers_are_positions_in_the_current_workspace_not_stored_labels_or_ids()
     rt.update(|s, _| s.apply(updated.clone()));
     rt.frame(0.0);
     assert_text(&rt, "tab-3", "1");
-    assert_text(&rt, "terminal-header", "1");
     // Removing a tab leaves the remaining positions consecutive.
     updated.active_workspace = 1;
     updated.workspaces[0].terminals.remove(0);
@@ -335,7 +334,6 @@ fn tab_numbers_are_positions_in_the_current_workspace_not_stored_labels_or_ids()
     rt.update(|s, _| s.apply(updated));
     rt.frame(0.0);
     assert_text(&rt, "tab-2", "1");
-    assert_text(&rt, "terminal-header", "1");
 }
 
 #[test]
@@ -363,7 +361,7 @@ fn tabs_are_wider_and_close_glyph_is_muted_without_hover_background() {
 }
 
 #[test]
-fn terminal_header_tracks_the_selected_tab() {
+fn terminal_header_omits_the_selected_terminal_number() {
     let mut rt = runtime((1100.0, 720.0));
     let mut updated = snapshot();
     updated.active_terminal = Some(2);
@@ -376,7 +374,7 @@ fn terminal_header_tracks_the_selected_tab() {
         .position(|e| e.key.as_deref() == Some("terminal-header"))
         .unwrap();
     assert!(
-        elements
+        !elements
             .iter()
             .any(|e| { e.parent == Some(header) && e.text.as_deref() == Some("2") })
     );

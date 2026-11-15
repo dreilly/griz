@@ -151,7 +151,6 @@ fn card(state: &State, p: &Palette, id: Option<TerminalId>, split: bool) -> El {
                 .font(p.label)
                 .color(if active { accent } else { p.muted }),
         )
-        .child(text(label.clone()).font(p.label).color(p.ink).truncate())
         .child(el().grow(1.0));
     if exited {
         header = header.child(
