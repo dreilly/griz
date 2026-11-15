@@ -324,7 +324,11 @@ styled screen. PTY-output publications are coalesced to roughly 60 per second;
 command acknowledgements and catalog changes can publish immediately. Only visible
 terminals need screen extraction; every background terminal still parses all its
 output. A slow client retains only its newest pending view, with a separate bounded
-error queue. The service blocks when idle; the GUI does not continuously poll frames.
+error queue. Selected views own immutable image resources; the socket writer sends
+only newly referenced generations in bounded base64 chunks before their view. A
+replaced pending view cannot strand resource references. Receivers hydrate a full
+view before exposing it to the GUI. The service blocks when idle; the GUI does not
+continuously poll frames.
 
 This is intentionally simpler than Rex's per-client raw-byte streaming design:
 terminal emulation and split layouts remain authoritative in the service. More
@@ -408,6 +412,44 @@ modifier-only streams. Scripted logical keys may lack a physical code.
 IME commits remain raw UTF-8 text because a composed result has no trustworthy native
 key event to attach; this avoids pretending to support associated native event streams
 that Rune did not provide.
+
+### Terminal images
+
+Static **Kitty graphics** render through libghostty's resolved image placements,
+including PNG and raw pixels, cropped/scaled images, alpha, z/layer ordering,
+fixed/Unicode-placeholder/relative placements, scrolling, deletion, alternate screens,
+and navigation previews. Ghostty remains the only graphics-protocol parser. Pixel
+resources are immutable and generation-cached across the VT, socket connection, and
+Rune renderer; unchanged images are not resent with every text frame.
+
+Cell pixel geometry follows the last accepted live client's layout (including device
+scale), like the existing grid-resize ownership policy. Ghostty's size callback
+answers cell/window/grid queries, and PTY pixel dimensions are populated. Previews
+never take geometry ownership.
+
+Limits: 16 MiB Kitty storage **per screen** (primary and alternate have separate
+budgets), 16 MiB decoded RGBA per exported resource/visible screen, 8192 pixels per
+source axis, and 256 exported placements per screen. A connection can hydrate up to
+256 MiB of unique image resources for eight live panes plus eight preview panes;
+old/frozen frames may retain their own immutable resources. The GUI's cropped-pixel
+LRU retains at most 32 MiB/256 entries per rendering thread, in addition to active
+Rune/GPU allocations. These are component budgets, not a hard process-RSS limit.
+Animations are not scheduled; animated PNG decoding is rejected. iTerm2/Sixel are
+not implemented. Terminal-requested file, temporary-file, and shared-memory image
+loads are disabled; inline transfers are supported.
+
+Capability detection remains truthful: Griz identifies itself as `TERM_PROGRAM=griz`
+and Ghostty answers the generic Kitty graphics query. Pi 1.5.2 uses environment-based
+image detection and does not yet recognize Griz or probe Kitty generically. If Pi
+does not select images in a clean launch, explicitly start it with:
+
+```sh
+PI_IMAGE_PROTOCOL=kitty pi
+```
+
+Griz does not inject this Pi-specific override or impersonate another terminal.
+Inherited outer-terminal variables can influence application detection; do not rely
+on those as evidence of Griz capabilities.
 
 ### Terminal mouse and copying
 
@@ -547,6 +589,8 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 - Cell-fitted block elements and solid light/heavy box-drawing strokes (including
   mixed-weight junctions and half-line caps), so TUI logos and borders join without
   font-leading gaps. The same geometry scales into navigation previews.
+- Static Kitty images, including Pi-style PNG previews, with cropping, alpha, image
+  layers, cached resource delivery, and proper cell/pixel geometry.
 - Window/sidebar resize updates libghostty and every visible pane's PTY (SIGWINCH).
 - Enter, Shift+Enter (CSI-u, for multiline input in Pi and compatible TUIs), Backspace,
   Tab, arrows (including application cursor mode), common navigation and function keys,
@@ -560,7 +604,7 @@ and loses the catalog. No launchd integration or reboot restoration is installed
 ## Current limits
 
 - No tab reordering/renaming, pane dragging across tabs/windows, or remote transport yet.
-- No draggable scrollback scrollbar, images, hyperlinks, complete native keyboard event fidelity,
+- No draggable scrollback scrollbar, animated/iTerm2/Sixel images, hyperlinks, complete native keyboard event fidelity,
   or full font/glyph shaping. Selection covers only the visible grid; Ghostty-native
   gesture semantics and history-spanning/autoscroll selection remain future work.
   Secondary clicks are reported as press/release pairs; right-button dragging is not yet exposed by Rune.
@@ -572,8 +616,8 @@ and loses the catalog. No launchd integration or reboot restoration is installed
   16 clients, eight panes per tab, 300 × 120 cells per grid, 256 KiB per input or raw
   UTF-8 paste, one pending paste confirmation per client, and 16 MiB per IPC message.
 - Starting directories must be absolute existing paths; no file picker or `~` expansion.
-- Multiple clients may view one terminal but share its dimensions; the last
-  selection/resize wins. Different terminals have independent dimensions.
+- Multiple clients may view one terminal but share its grid and pixel geometry;
+  the last accepted live layout wins. Different terminals have independent dimensions.
 - Closing a tab terminates its shell and foreground process group; this is not a
   general process-tree supervisor for deliberately detached/nohup jobs.
 
@@ -644,8 +688,10 @@ cargo run -p griz -- --frame artifacts/demo-view.json \
   --snap artifacts/workspaces.png --tree artifacts/workspaces.json
 ```
 
-Offline captures never attach, send input, or reflow. Live resize happens in the
-core. Generated captures stay in ignored `artifacts/`.
+Offline captures never attach, send input, or reflow. Ordinary JSON view files
+contain image placements but omit the out-of-band pixel resources; image rendering
+is exercised by the hydrated GUI tests and isolated native-window smoke lane rather
+than by this JSON-only capture path. Live resize happens in the core. Generated captures stay in ignored `artifacts/`.
 
 ## References
 

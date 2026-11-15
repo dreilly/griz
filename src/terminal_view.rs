@@ -3,11 +3,22 @@ use crate::{
     State,
     settings::{Settings, Theme},
 };
-use griz_protocol::{Cell, CursorShape, Screen, TerminalId};
+use griz_protocol::{Cell, CursorShape, ImageLayer, Screen, TerminalId};
 use rune::{Color, Cursor, El, PointerButton, TextStyle, el, text};
 
 mod decorations;
 mod graphics;
+mod images;
+
+#[cfg(test)]
+pub(crate) fn reset_image_cache() {
+    images::reset_cache();
+}
+
+#[cfg(test)]
+pub(crate) fn image_cache_usage() -> (usize, usize) {
+    images::cache_usage()
+}
 
 pub const PAD: f32 = 12.0;
 
@@ -228,6 +239,8 @@ fn blink(ink: El) -> El {
 
 /// Use the same glyph/graphic/decorations path for normal cells and block-cursor contrast ink.
 /// Cursor contrast deliberately ignores faint, but cell blink still applies to its redraw.
+const IMAGE_PLACEHOLDER: &str = "\u{10eeee}";
+
 fn cell_ink(
     cell: &Cell,
     settings: &Settings,
@@ -237,7 +250,7 @@ fn cell_ink(
     underline: Color,
     honor_faint: bool,
 ) -> Option<(El, bool)> {
-    if cell.concealed {
+    if cell.concealed || cell.text.starts_with(IMAGE_PLACEHOLDER) {
         return None;
     }
     let faint = if honor_faint && cell.faint {
@@ -274,7 +287,7 @@ fn cell_ink(
     Some((if cell.blink { blink(ink) } else { ink }, graphic))
 }
 
-fn screen_grid(
+pub(crate) fn screen_grid(
     screen: &Screen,
     settings: &Settings,
     cell_width: f32,
@@ -287,8 +300,16 @@ fn screen_grid(
             f32::from(screen.cols) * cell_width,
             f32::from(screen.rows) * cell_height,
         )
+        .clip_soft(0.0)
         .absolute(PAD, PAD)
         .inert();
+    grid = images::add_layer(
+        grid,
+        screen,
+        cell_width,
+        cell_height,
+        ImageLayer::BelowBackground,
+    );
     for (y, row) in screen.cells.iter().enumerate() {
         // Keep the protocol's black base background transparent for the chosen theme.
         let mut x = 0;
@@ -306,6 +327,9 @@ fn screen_grid(
                 );
             }
         }
+    }
+    grid = images::add_layer(grid, screen, cell_width, cell_height, ImageLayer::BelowText);
+    for (y, row) in screen.cells.iter().enumerate() {
         for (x, cell) in row.iter().enumerate() {
             let decorated = !cell.underline.is_none() || cell.strikethrough || cell.overline;
             if cell.width == 0 || cell.concealed || cell.text.trim().is_empty() && !decorated {
@@ -334,6 +358,7 @@ fn screen_grid(
             grid = grid.child(glyph.absolute(x as f32 * cell_width, y as f32 * cell_height));
         }
     }
+    grid = images::add_layer(grid, screen, cell_width, cell_height, ImageLayer::AboveText);
     if active
         && screen.cursor_visible
         && screen.cursor_x < screen.cols

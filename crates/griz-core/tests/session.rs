@@ -16,6 +16,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 mod accents;
 #[path = "session/agents.rs"]
 mod agents;
+#[path = "session/geometry.rs"]
+mod geometry;
+#[path = "session/images.rs"]
+mod images;
 #[path = "session/input_latency.rs"]
 mod input_latency;
 #[path = "session/key.rs"]

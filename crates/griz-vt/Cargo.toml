@@ -7,6 +7,7 @@ build = "build.rs"
 
 [dependencies]
 griz-protocol = { path = "../griz-protocol" }
+png = "0.18"
 
 [build-dependencies]
 cc = "1"

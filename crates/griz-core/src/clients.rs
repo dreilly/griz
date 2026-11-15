@@ -1,6 +1,6 @@
 //! Per-client bounded delivery: one replaceable View plus a bounded Error queue.
 use crate::{ClientId, Message};
-use griz_protocol::{Event, Request, receive, send};
+use griz_protocol::{Event, Request, image_transport::ImageSender, receive, send};
 use std::collections::VecDeque;
 use std::io;
 use std::net::Shutdown;
@@ -177,11 +177,14 @@ fn connection(
     let writer_alive = alive.clone();
     let writer_outbox = outbox.clone();
     let worker = std::thread::spawn(move || {
+        let mut image_sender = ImageSender::new();
         while writer_alive.load(Ordering::Acquire) {
             let Some(event) = writer_outbox.next() else {
                 break;
             };
-            if send(&mut writer, event.as_ref()).is_err() || matches!(*event, Event::Stopping) {
+            if image_sender.send(&mut writer, event.as_ref()).is_err()
+                || matches!(*event, Event::Stopping)
+            {
                 break;
             }
         }
@@ -221,6 +224,10 @@ fn connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use griz_protocol::{
+        CursorShape, ImageAsset, ImageKey, ImageLayer, ImagePlacement, Screen, TerminalFrame,
+        ViewState,
+    };
 
     fn confirmation(serial: u64, paste_id: u64) -> Event {
         Event::PasteConfirmationRequired {
@@ -251,5 +258,92 @@ mod tests {
         outbox.cancel_paste_confirmation(12);
         outbox.close();
         assert!(outbox.next().is_none());
+    }
+
+    fn image_view(id: u32) -> Event {
+        let asset = Arc::new(ImageAsset {
+            key: ImageKey {
+                namespace: 1,
+                id,
+                generation: 1,
+            },
+            width: 1,
+            height: 1,
+            rgba: vec![id as u8; 4],
+        });
+        let frame = TerminalFrame {
+            id: 1,
+            shell_pid: 2,
+            screen: Screen {
+                cols: 2,
+                rows: 2,
+                cells: vec![],
+                row_soft_wrapped: vec![],
+                cursor_x: 0,
+                cursor_y: 0,
+                cursor_visible: false,
+                cursor_shape: CursorShape::Block,
+                cursor_blinking: false,
+                cursor_color: None,
+                title: String::new(),
+                application_cursor: false,
+                bracketed_paste: false,
+                mouse_tracking: false,
+                scrollback_offset: 0,
+                cell_width: 8,
+                cell_height: 16,
+                images: vec![ImagePlacement {
+                    key: asset.key,
+                    layer: ImageLayer::AboveText,
+                    z: 0,
+                    col: 0,
+                    row: 0,
+                    offset_x: 0,
+                    offset_y: 0,
+                    width: 1,
+                    height: 1,
+                    source_x: 0,
+                    source_y: 0,
+                    source_width: 1,
+                    source_height: 1,
+                }],
+                image_assets: vec![asset],
+            },
+            exited: None,
+        };
+        Event::View {
+            state: ViewState {
+                core_pid: 3,
+                default_cwd: String::new(),
+                ack: 0,
+                workspaces: vec![],
+                active_workspace: 0,
+                active_terminal: Some(1),
+                terminals: vec![frame.clone()],
+                terminal: Some(frame),
+                preview: None,
+            },
+        }
+    }
+
+    #[test]
+    fn replaced_view_emits_only_the_chosen_views_resources() {
+        let outbox = Outbox::default();
+        outbox.view(image_view(1));
+        outbox.view(image_view(2));
+        let chosen = outbox.next().unwrap();
+
+        let mut wire = Vec::new();
+        ImageSender::new().send(&mut wire, chosen.as_ref()).unwrap();
+        let first: Event = receive(&mut wire.as_slice()).unwrap();
+        assert!(matches!(
+            first,
+            Event::Image {
+                chunk: griz_protocol::ImageChunk {
+                    key: ImageKey { id: 2, .. },
+                    ..
+                }
+            }
+        ));
     }
 }

@@ -161,33 +161,64 @@ workload and latency measurements justify its scheduling complexity.
 
 ## Major compatibility and capability gaps
 
-### 7. Kitty graphics are not rendered
+### 7. Kitty graphics — addressed for static images
 
-**Confirmed:** Griz snapshots and IPC contain only cells; the renderer has no
-image-placement path. Ghostty exposes image storage and render placements, and
-its documented default Kitty storage budget is 10 MB per screen. The subagent
-also verified image/Kitty symbols in the bundled static library. The exact live
-capability-query behavior remains untested.
+The shim reads Ghostty's resolved render-state image iterator and borrows decoded
+pixel views only until Rust copies a new generation into an immutable RGBA asset.
+Per-emulator namespaces isolate terminal IDs, shell replacements, and image IDs.
+Completed/frozen frames own their assets, so synchronized holds cannot leak newly
+replaced pixels. PNG decoding is registered once through `GHOSTTY_SYS_OPT_DECODE_PNG`,
+with bounded dimensions/allocation, Ghostty allocator ownership, and no FFI unwinding.
 
-**Ghostty support:** `GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR`, image pixel/data
-APIs (`render.h`), and `GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT`.
+The replaceable outbox still queues complete views, never separately droppable image
+events. Its writer selects a view first and then streams newly referenced resources
+in 64 KiB decoded/base64 chunks before that view. The GUI receiver validates and
+hydrates the complete view before publication; caches retain only current-view keys.
+The Rune renderer caches cropped pixels, paints Ghostty's three layers in z-order,
+and clips to the grid. Fixed, virtual-placeholder, and relative placements use the
+same resolved metadata; U+10EEEE placeholder graphemes are not painted as text.
 
-**Suggested scope:** Until implementing image transport/cache/layers/animation,
-consider setting storage to zero so unsupported graphics are not accepted and
-stored invisibly. Implementing rendering is substantial cross-layer work.
+Budgets: 16 MiB Kitty storage per screen, 16 MiB RGBA per exported resource/visible
+screen, 8192 pixels per source axis, 256 placements per screen, 256 MiB unique
+resources per live+preview view, and 32 MiB/256 cropped textures per GUI rendering
+thread (plus active GPU/Rune/frozen-frame allocations). Raw images exceeding source
+limits can remain in bounded Ghostty storage but are not exported. File/temp-file/
+shared-memory image media are explicitly disabled. Animation scheduling, animated
+PNG, iTerm2/Sixel, and JSON-only offline image snapshots remain outside this scope.
 
-### 8. Pixel geometry and size reports are missing
+Validation includes Pi-style chunked PNG, source crops, replacement/delete/reset,
+virtual and relative placement resolution, independent reconnect hydration, previews,
+and held image replacement through the real service/PTY. An isolated native Griz
+window visibly rendered a fixture emitted by the installed Pi Kitty encoder;
+`artifacts/kitty-smoke/native-pi-kitty.png` records that check. A manual native
+Control+V check also confirmed that Pi received `ESC[118;5u`, read a 46,834-byte
+clipboard image, and inserted its temporary path. Separately, an offline replay of
+an image-bearing `read` result through the installed Pi CLI's real tool-result UI
+visibly rendered in Griz with the explicit Kitty override. The native A/B captures
+are `artifacts/kitty-smoke/pi-image-output-{auto,kitty}.png`. No model request was
+made; the complete interactive submit/model/tool cycle remains untested.
 
-**Confirmed:** Resize IPC carries only columns/rows; Ghostty resize and PTY
-`winsize` receive zero pixel dimensions (`ghostty_shim.c`,
-`crates/griz-core/src/session.rs`).
+Capability caveat: the generic Kitty query is handled by Ghostty, but Pi 1.5.2
+auto-detects by environment and does not recognize Griz. The clean-environment A/B
+replay sent no image resources without an override, versus 98 resource chunks and
+one visible placement with `PI_IMAGE_PROTOCOL=kitty pi`. Use that explicit user
+override for image output in clean Pi launches; Griz does not spoof another
+terminal or inject a Pi-specific variable. Earlier sessions inherited a Ghostty
+fingerprint, explaining why Pi attempted image previews even before rendering existed.
 
-**Ghostty support:** `GHOSTTY_TERMINAL_OPT_SIZE`, `GhosttyTerminalSizeFn`,
-pixel-aware resize, and mode 2048 (`terminal.h`, `size_report.h`, `modes.h`).
+### 8. Pixel geometry and size reports — addressed
 
-**Impact/scope:** XTWINOPS/cell-size/in-band reports and image geometry need
-actual cell pixels over resize IPC. Multiple clients with different font sizes
-need an explicit geometry owner.
+Live panes report physical cell dimensions through bounded `SetCellSize` IPC.
+Ghostty resizes retain those dimensions, its `GHOSTTY_TERMINAL_OPT_SIZE` callback
+answers cell/window/grid size queries, and PTY `winsize` includes pixel dimensions
+(saturating the OS's 16-bit fields where necessary). Default startup geometry is
+8×16 pixels until a live client supplies its layout.
+
+The last accepted live layout owns shared terminal geometry, as with grid resizing.
+Preview-only clients cannot change it. Replacement shells inherit it, and a DPI-only
+change updates physical cells even when point-space pane rectangles stay unchanged.
+Geometry changes end a synchronized hold consistently with grid resize. Focus/theme
+ownership and application-requested host-window resizing remain separate work.
 
 ### 9. Focus reporting has no input path
 
@@ -302,10 +333,13 @@ history/image memory use are observable without expanding routine frame IPC.
   statically inspected. This is not proof of every application's observed behavior.
 - Keyboard press/repeat encoding is covered across live modes, but release,
   modifier-only, lock-state, consumed-modifier, and always-present physical metadata
-  remain unavailable from Griz's Rune logical-key path. Extra mouse buttons, live
-  graphics capability replies, and actual history depth still need focused runtime tests.
-- Clipboard, focus, geometry, theme, and terminal-controlled resize all require
-  policies for multiple clients observing the same terminal.
+  remain unavailable from Griz's Rune logical-key path. Extra mouse buttons and the
+  complete Pi clipboard-submit/model/tool cycle remain unverified. Native clipboard
+  attachment and real Pi tool-result image replay were checked separately; static
+  image rendering and explicit scrollback retention have focused runtime tests.
+- Clipboard, focus, theme, and terminal-controlled resize still require policies
+  for multiple clients observing the same terminal. Grid/pixel geometry explicitly
+  follows the last accepted live layout.
 - Standalone utilities (allocator control, WebAssembly, raw OSC/SGR parsers,
   snapshot serialization, unknown-sequence interception) are intentionally not
   counted as missing features without a concrete Griz use case.

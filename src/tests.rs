@@ -2,10 +2,10 @@
 mod agent_locations;
 #[path = "tests/agents.rs"]
 mod agents;
-#[path = "tests/buttons.rs"]
-mod buttons;
 #[path = "tests/breakout.rs"]
 mod breakout_tests;
+#[path = "tests/buttons.rs"]
+mod buttons;
 #[path = "tests/chrome.rs"]
 mod chrome;
 #[path = "tests/command_palette.rs"]
@@ -32,6 +32,8 @@ mod splits;
 mod terminal_cursor;
 #[path = "tests/terminal_graphics.rs"]
 mod terminal_graphics;
+#[path = "tests/terminal_images.rs"]
+mod terminal_images;
 #[path = "tests/terminal_mouse.rs"]
 mod terminal_mouse_tests;
 #[path = "tests/terminal_sgr.rs"]
@@ -485,6 +487,23 @@ fn native_command_shortcuts_never_leak_and_option_unicode_stays_structured_text(
             }
         })] if text == "å"
     ));
+}
+
+#[test]
+fn physical_cell_geometry_tracks_device_scale_without_changing_point_layout() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1000.0, 680.0));
+    rt.frame(0.0);
+    let (cw, ch) = terminal_view::cell_size(&rt.state.settings);
+    assert!(commands(&outgoing).iter().any(|(_, command)| matches!(command,
+        Command::SetCellSize { width, height, .. } if *width == (cw * 2.0).round() as u16 && *height == (ch * 2.0).round() as u16
+    )));
+    rt.set_viewport((1000.0, 680.0), 3.0);
+    rt.frame(0.0);
+    rt.frame(0.0);
+    assert!(commands(&outgoing).iter().any(|(_, command)| matches!(command,
+        Command::SetCellSize { width, height, .. } if *width == (cw * 3.0).round() as u16 && *height == (ch * 3.0).round() as u16
+    )));
 }
 
 #[test]

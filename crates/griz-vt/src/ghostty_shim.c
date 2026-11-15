@@ -12,6 +12,8 @@
 #define GRIZ_CELL_CONCEALED (1u << 4)
 #define GRIZ_CELL_STRIKETHROUGH (1u << 5)
 #define GRIZ_CELL_OVERLINE (1u << 6)
+#define GRIZ_MAX_IMAGE_BYTES (16u * 1024u * 1024u)
+#define GRIZ_MAX_IMAGE_PLACEMENTS 256u
 
 struct GrizVtCell {
     size_t text_offset;
@@ -23,6 +25,32 @@ struct GrizVtCell {
     uint8_t flags;
     uint8_t underline;
     uint8_t underline_color[3];
+};
+
+struct GrizVtImage {
+    uint32_t id;
+    uint64_t generation;
+    uint32_t width;
+    uint32_t height;
+    uint8_t format;
+    const uint8_t* pixels;
+    size_t pixels_len;
+};
+
+struct GrizVtImagePlacement {
+    size_t image_index;
+    uint8_t layer;
+    int32_t z;
+    int32_t col;
+    int32_t row;
+    uint32_t offset_x;
+    uint32_t offset_y;
+    uint32_t width;
+    uint32_t height;
+    uint32_t source_x;
+    uint32_t source_y;
+    uint32_t source_width;
+    uint32_t source_height;
 };
 
 struct GrizVtSnapshot {
@@ -48,6 +76,10 @@ struct GrizVtSnapshot {
     size_t text_cap;
     uint8_t* title;
     size_t title_len;
+    struct GrizVtImage* images;
+    size_t images_len;
+    struct GrizVtImagePlacement* image_placements;
+    size_t image_placements_len;
 };
 
 struct GrizVt {
@@ -55,6 +87,7 @@ struct GrizVt {
     GhosttyRenderState render_state;
     GhosttyRenderStateRowIterator row_iterator;
     GhosttyRenderStateRowCells row_cells;
+    GhosttyRenderStateImageIterator image_iterator;
     GhosttyMouseEncoder mouse_encoder;
     GhosttyMouseEvent mouse_event;
     GhosttyKeyEncoder key_encoder;
@@ -65,6 +98,10 @@ struct GrizVt {
     uint16_t mouse_rows;
     uint16_t mouse_cell_width;
     uint16_t mouse_cell_height;
+    uint16_t cols;
+    uint16_t rows;
+    uint16_t cell_width;
+    uint16_t cell_height;
     uint8_t* responses;
     size_t responses_len;
     size_t responses_cap;
@@ -108,6 +145,38 @@ static void griz_render_hold(
     if (vt != NULL) {
         vt->render_held = held;
     }
+}
+
+static bool griz_size(
+    GhosttyTerminal terminal,
+    void* userdata,
+    GhosttySizeReportSize* out
+) {
+    (void)terminal;
+    struct GrizVt* vt = userdata;
+    if (vt == NULL || out == NULL) {
+        return false;
+    }
+    out->columns = vt->cols;
+    out->rows = vt->rows;
+    out->cell_width = vt->cell_width;
+    out->cell_height = vt->cell_height;
+    return true;
+}
+
+int griz_vt_install_png_decoder(GhosttySysDecodePngFn decoder) {
+    if (decoder == NULL) {
+        return GHOSTTY_INVALID_VALUE;
+    }
+    return ghostty_sys_set(GHOSTTY_SYS_OPT_DECODE_PNG, (const void*)decoder);
+}
+
+uint8_t* griz_vt_png_alloc(const GhosttyAllocator* allocator, size_t len) {
+    return ghostty_alloc(allocator, len);
+}
+
+void griz_vt_png_free(const GhosttyAllocator* allocator, uint8_t* data, size_t len) {
+    ghostty_free(allocator, data, len);
 }
 
 static void griz_capture_discard(struct GrizVt* vt) {
@@ -176,6 +245,7 @@ static void griz_vt_free_partial(struct GrizVt* vt) {
     ghostty_key_encoder_free(vt->key_encoder);
     ghostty_mouse_event_free(vt->mouse_event);
     ghostty_mouse_encoder_free(vt->mouse_encoder);
+    ghostty_render_state_image_iterator_free(vt->image_iterator);
     ghostty_render_state_row_cells_free(vt->row_cells);
     ghostty_render_state_row_iterator_free(vt->row_iterator);
     ghostty_render_state_free(vt->render_state);
@@ -206,6 +276,10 @@ int griz_vt_new(
     vt->program_status = program_status;
     vt->prompt_start = prompt_start;
     vt->status_userdata = status_userdata;
+    vt->cols = cols;
+    vt->rows = rows;
+    vt->cell_width = 8;
+    vt->cell_height = 16;
     GhosttyResult result = ghostty_terminal_new(NULL, &vt->terminal, cols, rows);
     if (result != GHOSTTY_SUCCESS) {
         griz_vt_free_partial(vt);
@@ -223,6 +297,45 @@ int griz_vt_new(
             &scrollback_max_lines
         );
     }
+    if (result == GHOSTTY_SUCCESS) {
+        uint64_t image_limit = GRIZ_MAX_IMAGE_BYTES;
+        result = ghostty_terminal_set(
+            vt->terminal,
+            GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT,
+            &image_limit
+        );
+    }
+    if (result == GHOSTTY_SUCCESS) {
+        bool disabled = false;
+        result = ghostty_terminal_set(
+            vt->terminal,
+            GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
+            &disabled
+        );
+    }
+    if (result == GHOSTTY_SUCCESS) {
+        result = ghostty_terminal_set(
+            vt->terminal,
+            GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,
+            NULL
+        );
+    }
+    if (result == GHOSTTY_SUCCESS) {
+        bool disabled = false;
+        result = ghostty_terminal_set(
+            vt->terminal,
+            GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_SHARED_MEM,
+            &disabled
+        );
+    }
+    if (result == GHOSTTY_SUCCESS) {
+        size_t apc_max_bytes = GRIZ_MAX_IMAGE_BYTES;
+        result = ghostty_terminal_set(
+            vt->terminal,
+            GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES,
+            &apc_max_bytes
+        );
+    }
     if (result != GHOSTTY_SUCCESS) {
         griz_vt_free_partial(vt);
         return result;
@@ -238,6 +351,11 @@ int griz_vt_new(
         return result;
     }
     result = ghostty_render_state_row_cells_new(NULL, &vt->row_cells);
+    if (result != GHOSTTY_SUCCESS) {
+        griz_vt_free_partial(vt);
+        return result;
+    }
+    result = ghostty_render_state_image_iterator_new(NULL, &vt->image_iterator);
     if (result != GHOSTTY_SUCCESS) {
         griz_vt_free_partial(vt);
         return result;
@@ -287,6 +405,13 @@ int griz_vt_new(
             (const void*)griz_render_hold
         );
     }
+    if (result == GHOSTTY_SUCCESS) {
+        result = ghostty_terminal_set(
+            vt->terminal,
+            GHOSTTY_TERMINAL_OPT_SIZE,
+            (const void*)griz_size
+        );
+    }
     if (result != GHOSTTY_SUCCESS) {
         griz_vt_free_partial(vt);
         return result;
@@ -299,6 +424,15 @@ int griz_vt_new(
     if (result == GHOSTTY_SUCCESS) {
         result = ghostty_terminal_set(vt->terminal, GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT,
                                       (const void*)griz_semantic_prompt);
+    }
+    if (result == GHOSTTY_SUCCESS) {
+        result = ghostty_terminal_resize(
+            vt->terminal,
+            cols,
+            rows,
+            vt->cell_width,
+            vt->cell_height
+        );
     }
     if (result != GHOSTTY_SUCCESS) {
         griz_vt_free_partial(vt);
@@ -324,7 +458,44 @@ int griz_vt_resize(struct GrizVt* vt, uint16_t cols, uint16_t rows) {
     if (vt == NULL) {
         return GHOSTTY_INVALID_VALUE;
     }
-    return ghostty_terminal_resize(vt->terminal, cols, rows, 0, 0);
+    uint16_t old_cols = vt->cols;
+    uint16_t old_rows = vt->rows;
+    vt->cols = cols;
+    vt->rows = rows;
+    GhosttyResult result = ghostty_terminal_resize(
+        vt->terminal,
+        cols,
+        rows,
+        vt->cell_width,
+        vt->cell_height
+    );
+    if (result != GHOSTTY_SUCCESS) {
+        vt->cols = old_cols;
+        vt->rows = old_rows;
+    }
+    return result;
+}
+
+int griz_vt_set_cell_size(struct GrizVt* vt, uint16_t width, uint16_t height) {
+    if (vt == NULL || width == 0 || height == 0) {
+        return GHOSTTY_INVALID_VALUE;
+    }
+    uint16_t old_width = vt->cell_width;
+    uint16_t old_height = vt->cell_height;
+    vt->cell_width = width;
+    vt->cell_height = height;
+    GhosttyResult result = ghostty_terminal_resize(
+        vt->terminal,
+        vt->cols,
+        vt->rows,
+        width,
+        height
+    );
+    if (result != GHOSTTY_SUCCESS) {
+        vt->cell_width = old_width;
+        vt->cell_height = old_height;
+    }
+    return result;
 }
 
 uint8_t griz_vt_render_held(const struct GrizVt* vt) {
@@ -953,6 +1124,255 @@ static int griz_fill_cell(
     return griz_cell_text(snapshot, cells, out);
 }
 
+static int griz_snapshot_reserve_images(
+    struct GrizVtSnapshot* snapshot,
+    size_t needed
+) {
+    struct GrizVtImage* images = realloc(
+        snapshot->images,
+        needed * sizeof(*snapshot->images)
+    );
+    if (images == NULL) {
+        return GHOSTTY_OUT_OF_MEMORY;
+    }
+    snapshot->images = images;
+    return GHOSTTY_SUCCESS;
+}
+
+static int griz_snapshot_reserve_image_placements(
+    struct GrizVtSnapshot* snapshot,
+    size_t needed
+) {
+    struct GrizVtImagePlacement* placements = realloc(
+        snapshot->image_placements,
+        needed * sizeof(*snapshot->image_placements)
+    );
+    if (placements == NULL) {
+        return GHOSTTY_OUT_OF_MEMORY;
+    }
+    snapshot->image_placements = placements;
+    return GHOSTTY_SUCCESS;
+}
+
+static int griz_snapshot_image(
+    struct GrizVtSnapshot* snapshot,
+    GhosttyKittyGraphics graphics,
+    uint32_t id,
+    uint64_t generation,
+    size_t* out_index
+) {
+    for (size_t i = 0; i < snapshot->images_len; i++) {
+        if (snapshot->images[i].id == id &&
+            snapshot->images[i].generation == generation) {
+            *out_index = i;
+            return GHOSTTY_SUCCESS;
+        }
+    }
+
+    GhosttyKittyGraphicsImage image = ghostty_kitty_graphics_image(graphics, id);
+    if (image == NULL) {
+        return GHOSTTY_INVALID_VALUE;
+    }
+    struct GrizVtImage captured = {0};
+    GhosttyKittyImageFormat format = GHOSTTY_KITTY_IMAGE_FORMAT_RGBA;
+    GhosttyString pixels = {0};
+    GhosttyResult result = ghostty_kitty_graphics_image_get(
+        image,
+        GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_ID,
+        &captured.id
+    );
+    if (result == GHOSTTY_SUCCESS) {
+        result = ghostty_kitty_graphics_image_get(
+            image,
+            GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_GENERATION,
+            &captured.generation
+        );
+    }
+    if (result == GHOSTTY_SUCCESS) {
+        result = ghostty_kitty_graphics_image_get(
+            image,
+            GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH,
+            &captured.width
+        );
+    }
+    if (result == GHOSTTY_SUCCESS) {
+        result = ghostty_kitty_graphics_image_get(
+            image,
+            GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT,
+            &captured.height
+        );
+    }
+    if (result == GHOSTTY_SUCCESS) {
+        result = ghostty_kitty_graphics_image_get(
+            image,
+            GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT,
+            &format
+        );
+    }
+    if (result == GHOSTTY_SUCCESS) {
+        result = ghostty_kitty_graphics_image_get(
+            image,
+            GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS,
+            &pixels
+        );
+    }
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+    if (captured.id != id || captured.generation != generation ||
+        (pixels.len != 0 && pixels.ptr == NULL)) {
+        return GHOSTTY_INVALID_VALUE;
+    }
+    captured.format = (uint8_t)format;
+    captured.pixels = pixels.ptr;
+    captured.pixels_len = pixels.len;
+
+    size_t index = snapshot->images_len;
+    result = griz_snapshot_reserve_images(snapshot, index + 1);
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+    snapshot->images[index] = captured;
+    snapshot->images_len++;
+    *out_index = index;
+    return GHOSTTY_SUCCESS;
+}
+
+static int griz_snapshot_images(
+    struct GrizVt* vt,
+    struct GrizVtSnapshot* snapshot
+) {
+    GhosttyResult result = ghostty_render_state_get(
+        vt->render_state,
+        GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR,
+        &vt->image_iterator
+    );
+    if (result == GHOSTTY_UNSUPPORTED) {
+        return GHOSTTY_SUCCESS;
+    }
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+
+    GhosttyKittyGraphics graphics = NULL;
+    result = ghostty_terminal_get(
+        vt->terminal,
+        GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+        &graphics
+    );
+    if (result == GHOSTTY_UNSUPPORTED) {
+        return GHOSTTY_SUCCESS;
+    }
+    if (result != GHOSTTY_SUCCESS) {
+        return result;
+    }
+
+    while (snapshot->image_placements_len < GRIZ_MAX_IMAGE_PLACEMENTS &&
+           ghostty_render_state_image_iterator_next(vt->image_iterator)) {
+        GhosttyImageProtocol protocol = GHOSTTY_IMAGE_PROTOCOL_KITTY;
+        uint32_t id = 0;
+        uint64_t generation = 0;
+        GhosttyImageLayer layer = GHOSTTY_IMAGE_LAYER_BELOW_BACKGROUND;
+        struct GrizVtImagePlacement placement = {0};
+        result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_PROTOCOL,
+            &protocol
+        );
+        if (result != GHOSTTY_SUCCESS) return result;
+        if (protocol != GHOSTTY_IMAGE_PROTOCOL_KITTY) continue;
+
+        result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID,
+            &id
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION,
+            &generation
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER,
+            &layer
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_Z,
+            &placement.z
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL,
+            &placement.col
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW,
+            &placement.row
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X,
+            &placement.offset_x
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y,
+            &placement.offset_y
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH,
+            &placement.width
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT,
+            &placement.height
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X,
+            &placement.source_x
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y,
+            &placement.source_y
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH,
+            &placement.source_width
+        );
+        if (result == GHOSTTY_SUCCESS) result = ghostty_render_state_image_get(
+            vt->image_iterator,
+            GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT,
+            &placement.source_height
+        );
+        if (result != GHOSTTY_SUCCESS) return result;
+
+        placement.layer = (uint8_t)layer;
+        result = griz_snapshot_image(
+            snapshot,
+            graphics,
+            id,
+            generation,
+            &placement.image_index
+        );
+        if (result != GHOSTTY_SUCCESS) return result;
+        result = griz_snapshot_reserve_image_placements(
+            snapshot,
+            snapshot->image_placements_len + 1
+        );
+        if (result != GHOSTTY_SUCCESS) return result;
+        snapshot->image_placements[snapshot->image_placements_len++] = placement;
+    }
+    return GHOSTTY_SUCCESS;
+}
+
 void griz_vt_snapshot_free(struct GrizVtSnapshot* snapshot) {
     if (snapshot == NULL) {
         return;
@@ -961,6 +1381,8 @@ void griz_vt_snapshot_free(struct GrizVtSnapshot* snapshot) {
     free(snapshot->cells);
     free(snapshot->text);
     free(snapshot->title);
+    free(snapshot->images);
+    free(snapshot->image_placements);
     free(snapshot);
 }
 
@@ -1171,6 +1593,11 @@ int griz_vt_snapshot(struct GrizVt* vt, struct GrizVtSnapshot** out) {
             result = GHOSTTY_INVALID_VALUE;
             goto fail;
         }
+    }
+
+    result = griz_snapshot_images(vt, snapshot);
+    if (result != GHOSTTY_SUCCESS) {
+        goto fail;
     }
 
     result = ghostty_render_state_clean(vt->render_state);

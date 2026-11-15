@@ -1095,6 +1095,7 @@ dependencies = [
 name = "griz-protocol"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "serde",
  "serde_json",
 ]
@@ -1105,6 +1106,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "griz-protocol",
+ "png 0.18.1",
 ]
 
 [[package]]

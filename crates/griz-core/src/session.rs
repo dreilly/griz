@@ -10,6 +10,18 @@ use std::sync::{
     mpsc::{SyncSender, sync_channel},
 };
 
+#[derive(Clone, Copy)]
+pub struct TerminalSize {
+    pub grid: (u16, u16),
+    pub cell: (u16, u16),
+}
+
+impl TerminalSize {
+    pub fn new(grid: (u16, u16), cell: (u16, u16)) -> Self {
+        Self { grid, cell }
+    }
+}
+
 pub struct Session {
     master: Option<Box<dyn MasterPty + Send>>,
     input: Option<SyncSender<Vec<u8>>>,
@@ -24,12 +36,16 @@ impl Session {
         cwd: &Path,
         terminal_id: TerminalId,
         generation: u64,
-        cols: u16,
-        rows: u16,
+        dimensions: TerminalSize,
         tx: SyncSender<Message>,
     ) -> io::Result<Self> {
         let pair = native_pty_system()
-            .openpty(size(cols, rows))
+            .openpty(size(
+                dimensions.grid.0,
+                dimensions.grid.1,
+                dimensions.cell.0,
+                dimensions.cell.1,
+            ))
             .map_err(io::Error::other)?;
         let mut command = CommandBuilder::new(shell);
         // GUI launches inherit launchd's minimal PATH, not a terminal's shell
@@ -121,11 +137,17 @@ impl Session {
         process_cwd(self.pid)
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
+    pub fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+    ) -> io::Result<()> {
         self.master
             .as_ref()
             .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "PTY is closed"))?
-            .resize(size(cols, rows))
+            .resize(size(cols, rows, cell_width, cell_height))
             .map_err(io::Error::other)
     }
 
@@ -211,11 +233,11 @@ fn process_cwd(_: u32) -> Option<PathBuf> {
     None
 }
 
-fn size(cols: u16, rows: u16) -> PtySize {
+fn size(cols: u16, rows: u16, cell_width: u16, cell_height: u16) -> PtySize {
     PtySize {
         cols,
         rows,
-        pixel_width: 0,
-        pixel_height: 0,
+        pixel_width: u16::try_from(u32::from(cols) * u32::from(cell_width)).unwrap_or(u16::MAX),
+        pixel_height: u16::try_from(u32::from(rows) * u32::from(cell_height)).unwrap_or(u16::MAX),
     }
 }

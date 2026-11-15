@@ -1,5 +1,5 @@
 use crate::clients::Outbox;
-use crate::session::Session;
+use crate::session::{Session, TerminalSize};
 use crate::validation::{directory_label, directory_path, validate_cwd, workspace_name};
 use crate::{ClientId, Message};
 use griz_protocol::{
@@ -19,6 +19,8 @@ const DIRECTORY_INTERVAL: Duration = Duration::from_millis(250);
 /// through Ghostty, publishes the latest complete frame, and permits future holds.
 const RENDER_HOLD_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
+const DEFAULT_CELL_SIZE: (u16, u16) = (8, 16);
+const MAX_CELL_SIZE: u16 = 512;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -125,6 +127,7 @@ struct TerminalRecord {
     current_cwd: PathBuf,
     generation: u64,
     grid: (u16, u16),
+    cell_size: (u16, u16),
     vt: Terminal,
     /// Last live frame completed outside a render hold. New clients use this prior
     /// frame, initially blank, rather than reading held live cells.
@@ -141,13 +144,18 @@ impl TerminalRecord {
         label: String,
         cwd: PathBuf,
         generation: u64,
-        grid: (u16, u16),
+        dimensions: TerminalSize,
         shell: &Path,
         tx: SyncSender<Message>,
     ) -> Result<Self> {
+        let TerminalSize {
+            grid,
+            cell: cell_size,
+        } = dimensions;
         let mut vt = Terminal::new(grid.0, grid.1)?;
+        vt.set_cell_size(cell_size.0, cell_size.1)?;
         let completed_screen = vt.screen()?;
-        let session = Session::spawn(shell, &cwd, id, generation, grid.0, grid.1, tx)?;
+        let session = Session::spawn(shell, &cwd, id, generation, dimensions, tx)?;
         Ok(Self {
             id,
             label,
@@ -155,6 +163,7 @@ impl TerminalRecord {
             initial_cwd: cwd,
             generation,
             grid,
+            cell_size,
             vt,
             completed_screen,
             render_hold_deadline: None,
@@ -241,7 +250,7 @@ impl Service {
             "Terminal 1".into(),
             default_cwd.clone(),
             1,
-            DEFAULT_SIZE,
+            TerminalSize::new(DEFAULT_SIZE, DEFAULT_CELL_SIZE),
             &shell,
             tx.clone(),
         )?;
@@ -457,6 +466,7 @@ impl Service {
                 | Command::Mouse { .. }
                 | Command::Scroll { .. }
                 | Command::Resize { .. }
+                | Command::SetCellSize { .. }
                 | Command::SetPreview { .. }
                 | Command::Paste { .. }
                 | Command::ConfirmPaste { .. }
@@ -725,6 +735,27 @@ impl Service {
                 self.clients.get_mut(&client_id).unwrap().dimensions = Some(size);
                 Ok(Outcome::Requester)
             }
+            Command::SetCellSize {
+                terminal_id,
+                width,
+                height,
+            } => {
+                if self.terminal_location(terminal_id).is_none() {
+                    return Err(format!("unknown terminal {terminal_id}"));
+                }
+                if !self.visible_terminal_ids(client_id).contains(&terminal_id) {
+                    return Err(format!(
+                        "terminal {terminal_id} is not a visible pane in the live layout"
+                    ));
+                }
+                if !(1..=MAX_CELL_SIZE).contains(&width) || !(1..=MAX_CELL_SIZE).contains(&height) {
+                    return Err(format!(
+                        "terminal cell size must be between 1 and {MAX_CELL_SIZE} pixels"
+                    ));
+                }
+                self.set_terminal_cell_size(terminal_id, (width, height));
+                Ok(Outcome::Requester)
+            }
             Command::StartShell { terminal_id } => self.start_shell(terminal_id),
         }
     }
@@ -929,7 +960,7 @@ impl Service {
             "Terminal 1".into(),
             cwd,
             1,
-            grid,
+            TerminalSize::new(grid, DEFAULT_CELL_SIZE),
             &self.shell,
             self.tx.clone(),
         )
@@ -978,7 +1009,7 @@ impl Service {
             format!("Terminal {number}"),
             cwd,
             1,
-            grid,
+            TerminalSize::new(grid, DEFAULT_CELL_SIZE),
             &self.shell,
             self.tx.clone(),
         )
@@ -1065,7 +1096,7 @@ impl Service {
             format!("Terminal {number}"),
             cwd,
             1,
-            DEFAULT_SIZE,
+            TerminalSize::new(DEFAULT_SIZE, DEFAULT_CELL_SIZE),
             &self.shell,
             self.tx.clone(),
         )
@@ -1292,6 +1323,7 @@ impl Service {
         }
         let generation = terminal.generation + 1;
         let grid = terminal.grid;
+        let cell_size = terminal.cell_size;
         let cwd = terminal.initial_cwd.clone();
         let label = terminal.label.clone();
         let mut replacement = TerminalRecord::spawn(
@@ -1299,7 +1331,7 @@ impl Service {
             label,
             cwd,
             generation,
-            grid,
+            TerminalSize::new(grid, cell_size),
             &self.shell,
             self.tx.clone(),
         )
@@ -1431,12 +1463,60 @@ impl Service {
                 return;
             }
             if terminal.exited.is_none()
-                && let Err(error) = terminal.session.resize(size.0, size.1)
+                && let Err(error) = terminal.session.resize(
+                    size.0,
+                    size.1,
+                    terminal.cell_size.0,
+                    terminal.cell_size.1,
+                )
             {
                 // A shell may exit between the command and its wait notification.
                 eprintln!("griz-core: terminal {terminal_id} PTY resize: {error}");
             }
             terminal.grid = size;
+            if !terminal.vt.render_held() {
+                terminal.render_hold_deadline = None;
+            }
+            was_held && !terminal.vt.render_held()
+        };
+        if released {
+            self.queue_frame_immediate(terminal_id);
+        } else {
+            self.queue_frame(terminal_id);
+        }
+    }
+
+    fn set_terminal_cell_size(&mut self, terminal_id: TerminalId, cell_size: (u16, u16)) {
+        let Some((workspace_index, terminal_index)) = self.terminal_location(terminal_id) else {
+            return;
+        };
+        let released = {
+            let terminal = &mut self.workspaces[workspace_index].terminals[terminal_index];
+            if terminal.cell_size == cell_size {
+                return;
+            }
+            let was_held = terminal.vt.render_held();
+            if let Err(error) = terminal.vt.set_cell_size(cell_size.0, cell_size.1) {
+                eprintln!("griz-core: terminal {terminal_id} render cell size: {error}");
+                return;
+            }
+            if terminal.vt.render_held()
+                && let Err(error) = terminal.vt.end_render_hold()
+            {
+                eprintln!("griz-core: terminal {terminal_id} cell size hold release: {error}");
+            }
+            if terminal.exited.is_none()
+                && let Err(error) = terminal.session.resize(
+                    terminal.grid.0,
+                    terminal.grid.1,
+                    cell_size.0,
+                    cell_size.1,
+                )
+            {
+                // A shell may exit between the command and its wait notification.
+                eprintln!("griz-core: terminal {terminal_id} PTY cell size: {error}");
+            }
+            terminal.cell_size = cell_size;
             if !terminal.vt.render_held() {
                 terminal.render_hold_deadline = None;
             }

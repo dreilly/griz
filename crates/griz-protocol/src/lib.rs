@@ -1,5 +1,9 @@
 //! Development IPC shared by the GUI and the session service. No GUI or FFI dependencies.
 //! The app and core evolve together; wire compatibility is not maintained during development.
+mod images;
+pub use images::*;
+pub mod image_transport;
+
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -387,6 +391,23 @@ pub struct Screen {
     /// Rows between this client's viewport and the live terminal area.
     #[serde(default)]
     pub scrollback_offset: u64,
+    /// Cell dimensions in the authoritative terminal's pixel coordinate system.
+    #[serde(default = "default_cell_width")]
+    pub cell_width: u16,
+    #[serde(default = "default_cell_height")]
+    pub cell_height: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImagePlacement>,
+    /// In-process ownership retained by completed/frozen frames; hydrated by resource transport.
+    #[serde(skip)]
+    pub image_assets: Vec<std::sync::Arc<ImageAsset>>,
+}
+
+fn default_cell_width() -> u16 {
+    8
+}
+fn default_cell_height() -> u16 {
+    16
 }
 
 impl Screen {
@@ -663,6 +684,12 @@ pub enum Command {
         cols: u16,
         rows: u16,
     },
+    /// Last accepted live layout owns terminal pixel geometry, as with grid resize.
+    SetCellSize {
+        terminal_id: TerminalId,
+        width: u16,
+        height: u16,
+    },
     /// Replace only an ended shell, retaining its terminal ID and starting directory.
     StartShell {
         terminal_id: TerminalId,
@@ -675,6 +702,10 @@ pub enum Command {
 #[allow(clippy::large_enum_variant)]
 pub enum Event {
     Stopping,
+    /// Resource chunks precede the complete view that references them.
+    Image {
+        chunk: ImageChunk,
+    },
     View {
         state: ViewState,
     },

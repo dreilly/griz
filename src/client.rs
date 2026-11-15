@@ -1,7 +1,7 @@
 //! The GUI never owns a PTY or emulator. It only attaches to the local service.
 use griz_protocol::{
-    Command as CoreCommand, Event, Request, TerminalId, ViewState, WorkspaceAccent, receive, send,
-    socket_path,
+    Command as CoreCommand, Event, Request, TerminalId, ViewState, WorkspaceAccent,
+    image_transport::ImageReceiver, send, socket_path,
 };
 use rune::Waker;
 use std::fs::OpenOptions;
@@ -101,8 +101,9 @@ impl Client {
                         }
                     }
                 });
+                let mut image_receiver = ImageReceiver::new();
                 while !stop.load(Ordering::Acquire) {
-                    let event: Event = receive(&mut stream)?;
+                    let event = image_receiver.receive(&mut stream)?;
                     let mut inbox = inbox.lock().unwrap();
                     match event {
                         Event::Error { message, .. } => inbox.error = Some(message),
@@ -133,6 +134,12 @@ impl Client {
                         Event::Stopping => {
                             inbox.error = Some("Core is stopping".into());
                             inbox.disconnected = true;
+                        }
+                        Event::Image { .. } => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "image receiver exposed a raw resource chunk",
+                            ));
                         }
                     }
                     drop(inbox);

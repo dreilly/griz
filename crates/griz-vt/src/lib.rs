@@ -1,5 +1,7 @@
 //! Safe, single-threaded wrapper around libghostty-vt 1.0.
 
+#[cfg(test)]
+mod image_tests;
 mod program_status;
 #[cfg(test)]
 mod program_status_tests;
@@ -7,16 +9,21 @@ mod program_status_tests;
 mod scrollback_tests;
 
 use griz_protocol::{
-    Cell, KeyAction, KeyInput, MouseAction, MouseButton, MouseInput, ProgramStatusRecord, Screen,
-    TerminalKey, UnderlineStyle,
+    Cell, ImageAsset, ImageKey, ImageLayer, ImagePlacement, KeyAction, KeyInput, MAX_IMAGE_BYTES,
+    MAX_IMAGE_DIMENSION, MAX_IMAGE_PLACEMENTS, MAX_SCREEN_IMAGE_BYTES, MouseAction, MouseButton,
+    MouseInput, ProgramStatusRecord, Screen, TerminalKey, UnderlineStyle,
 };
+use std::collections::{HashMap, HashSet};
 use std::error;
 use std::ffi::{c_int, c_void};
 use std::fmt;
+use std::io::Cursor;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::slice;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 const CELL_BOLD: u8 = 1 << 0;
 const CELL_ITALIC: u8 = 1 << 1;
@@ -29,6 +36,11 @@ const CELL_OVERLINE: u8 = 1 << 6;
 const OUT_OF_MEMORY: c_int = -1;
 const INVALID_VALUE: c_int = -2;
 const REJECTED: c_int = -7;
+const DEFAULT_CELL_WIDTH: u16 = 8;
+const DEFAULT_CELL_HEIGHT: u16 = 16;
+
+static NEXT_IMAGE_NAMESPACE: AtomicU64 = AtomicU64::new(1);
+static PNG_DECODER_RESULT: OnceLock<c_int> = OnceLock::new();
 
 /// Default estimated scrollback page allocation per terminal.
 ///
@@ -77,6 +89,34 @@ struct GrizVtCell {
 }
 
 #[repr(C)]
+struct GrizVtImage {
+    id: u32,
+    generation: u64,
+    width: u32,
+    height: u32,
+    format: u8,
+    pixels: *const u8,
+    pixels_len: usize,
+}
+
+#[repr(C)]
+struct GrizVtImagePlacement {
+    image_index: usize,
+    layer: u8,
+    z: i32,
+    col: i32,
+    row: i32,
+    offset_x: u32,
+    offset_y: u32,
+    width: u32,
+    height: u32,
+    source_x: u32,
+    source_y: u32,
+    source_width: u32,
+    source_height: u32,
+}
+
+#[repr(C)]
 struct GrizVtSnapshot {
     cols: u16,
     rows: u16,
@@ -100,9 +140,52 @@ struct GrizVtSnapshot {
     _text_cap: usize,
     title: *mut u8,
     title_len: usize,
+    images: *mut GrizVtImage,
+    images_len: usize,
+    image_placements: *mut GrizVtImagePlacement,
+    image_placements_len: usize,
+}
+
+#[repr(C)]
+struct GhosttyAllocator {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct GhosttySysImage {
+    width: u32,
+    height: u32,
+    data: *mut u8,
+    data_len: usize,
+}
+
+type DecodePngFn = unsafe extern "C" fn(
+    *mut c_void,
+    *const GhosttyAllocator,
+    *const u8,
+    usize,
+    *mut GhosttySysImage,
+) -> bool;
+
+struct PngAllocation {
+    allocator: *const GhosttyAllocator,
+    data: *mut u8,
+    len: usize,
+}
+
+impl Drop for PngAllocation {
+    fn drop(&mut self) {
+        if !self.data.is_null() {
+            // SAFETY: this guard exclusively owns the callback allocation until disarmed.
+            unsafe { griz_vt_png_free(self.allocator, self.data, self.len) };
+        }
+    }
 }
 
 unsafe extern "C" {
+    fn griz_vt_install_png_decoder(decoder: DecodePngFn) -> c_int;
+    fn griz_vt_png_alloc(allocator: *const GhosttyAllocator, len: usize) -> *mut u8;
+    fn griz_vt_png_free(allocator: *const GhosttyAllocator, data: *mut u8, len: usize);
     fn griz_vt_new(
         cols: u16,
         rows: u16,
@@ -116,6 +199,7 @@ unsafe extern "C" {
     fn griz_vt_free(vt: *mut GrizVt);
     fn griz_vt_write(vt: *mut GrizVt, data: *const u8, len: usize);
     fn griz_vt_resize(vt: *mut GrizVt, cols: u16, rows: u16) -> c_int;
+    fn griz_vt_set_cell_size(vt: *mut GrizVt, width: u16, height: u16) -> c_int;
     fn griz_vt_render_held(vt: *const GrizVt) -> u8;
     fn griz_vt_end_render_hold(vt: *mut GrizVt) -> c_int;
     fn griz_vt_mouse_input(
@@ -241,6 +325,10 @@ impl Drop for Viewport {
 pub struct Terminal {
     raw: NonNull<GrizVt>,
     statuses: Box<program_status::Records>,
+    image_namespace: u64,
+    image_cache: HashMap<ImageKey, Arc<ImageAsset>>,
+    cell_width: u16,
+    cell_height: u16,
     _single_threaded: PhantomData<Rc<()>>,
 }
 
@@ -256,6 +344,7 @@ impl Terminal {
         rows: u16,
         limits: ScrollbackLimits,
     ) -> Result<Self, Error> {
+        install_png_decoder()?;
         let mut raw = std::ptr::null_mut();
         let mut statuses = Box::<program_status::Records>::default();
         // SAFETY: out is valid; userdata is a stable Box kept alive until after
@@ -279,6 +368,10 @@ impl Terminal {
         Ok(Self {
             raw,
             statuses,
+            image_namespace: NEXT_IMAGE_NAMESPACE.fetch_add(1, Ordering::Relaxed),
+            image_cache: HashMap::new(),
+            cell_width: DEFAULT_CELL_WIDTH,
+            cell_height: DEFAULT_CELL_HEIGHT,
             _single_threaded: PhantomData,
         })
     }
@@ -309,10 +402,22 @@ impl Terminal {
     /// Ghostty also ends any synchronized-output render hold on every resize.
     pub fn resize(&mut self, cols: u16, rows: u16) -> Result<(), Error> {
         // SAFETY: the terminal handle is live and the scalar arguments have the
-        // exact types expected by the shim.
+        // exact types expected by the shim. The shim retains the configured pixels.
         check("resize", unsafe {
             griz_vt_resize(self.raw.as_ptr(), cols, rows)
         })
+    }
+
+    /// Sets authoritative cell pixel geometry without changing the terminal grid.
+    /// Future grid resizes retain these dimensions. Width and height must be nonzero.
+    pub fn set_cell_size(&mut self, width: u16, height: u16) -> Result<(), Error> {
+        // SAFETY: the terminal handle is live and the shim validates scalar dimensions.
+        check("set cell size", unsafe {
+            griz_vt_set_cell_size(self.raw.as_ptr(), width, height)
+        })?;
+        self.cell_width = width;
+        self.cell_height = height;
+        Ok(())
     }
 
     /// Whether Ghostty has an active synchronized-output render hold.
@@ -494,8 +599,16 @@ impl Terminal {
             code: INVALID_VALUE,
         })?;
         let snapshot = Snapshot(raw_snapshot);
-        // SAFETY: Snapshot owns a live C allocation until this function exits.
-        unsafe { snapshot.to_screen() }
+        // SAFETY: Snapshot owns a live C allocation until this function exits, and
+        // the borrowed Ghostty pixel views remain valid until the next VT mutation.
+        unsafe {
+            snapshot.to_screen(
+                self.image_namespace,
+                &mut self.image_cache,
+                self.cell_width,
+                self.cell_height,
+            )
+        }
     }
 
     /// Encodes clipboard text using live terminal modes. Errors and rejections return no bytes.
@@ -562,7 +675,13 @@ impl Drop for Terminal {
 struct Snapshot(NonNull<GrizVtSnapshot>);
 
 impl Snapshot {
-    unsafe fn to_screen(&self) -> Result<Screen, Error> {
+    unsafe fn to_screen(
+        &self,
+        namespace: u64,
+        image_cache: &mut HashMap<ImageKey, Arc<ImageAsset>>,
+        cell_width: u16,
+        cell_height: u16,
+    ) -> Result<Screen, Error> {
         // SAFETY: guaranteed by the caller and the lifetime of `self`.
         let snapshot = unsafe { self.0.as_ref() };
         let expected_cells = usize::from(snapshot.cols) * usize::from(snapshot.rows);
@@ -572,6 +691,9 @@ impl Snapshot {
             || (snapshot.cells_len != 0 && snapshot.cells.is_null())
             || (snapshot.text_len != 0 && snapshot.text.is_null())
             || (snapshot.title_len != 0 && snapshot.title.is_null())
+            || (snapshot.images_len != 0 && snapshot.images.is_null())
+            || (snapshot.image_placements_len != 0 && snapshot.image_placements.is_null())
+            || snapshot.image_placements_len > MAX_IMAGE_PLACEMENTS
         {
             return Err(Error {
                 operation: "decode render snapshot",
@@ -606,6 +728,117 @@ impl Snapshot {
             // SAFETY: validated above; the C snapshot owns this complete buffer.
             unsafe { slice::from_raw_parts(snapshot.title, snapshot.title_len) }
         };
+        let raw_images = if snapshot.images_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: validated above; descriptors borrow pixels owned by the live terminal.
+            unsafe { slice::from_raw_parts(snapshot.images, snapshot.images_len) }
+        };
+        let raw_placements = if snapshot.image_placements_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: validated above; the C snapshot owns this complete array.
+            unsafe {
+                slice::from_raw_parts(snapshot.image_placements, snapshot.image_placements_len)
+            }
+        };
+
+        let mut referenced_indices = HashSet::new();
+        for placement in raw_placements {
+            if placement.image_index >= raw_images.len() {
+                return Err(Error {
+                    operation: "decode render snapshot",
+                    code: INVALID_VALUE,
+                });
+            }
+            referenced_indices.insert(placement.image_index);
+        }
+
+        let mut assets_by_index = HashMap::new();
+        let mut image_assets = Vec::new();
+        let mut screen_image_bytes = 0usize;
+        for (index, image) in raw_images.iter().enumerate() {
+            if !referenced_indices.contains(&index) {
+                continue;
+            }
+            let key = ImageKey {
+                namespace,
+                id: image.id,
+                generation: image.generation,
+            };
+            let Some(rgba_len) = image_rgba_len(image.width, image.height) else {
+                continue;
+            };
+            let Some(new_total) = screen_image_bytes.checked_add(rgba_len) else {
+                continue;
+            };
+            if new_total > MAX_SCREEN_IMAGE_BYTES {
+                continue;
+            }
+
+            let asset = if let Some(cached) = image_cache.get(&key).filter(|cached| {
+                cached.width == image.width
+                    && cached.height == image.height
+                    && cached.rgba.len() == rgba_len
+            }) {
+                Arc::clone(cached)
+            } else {
+                let Some(rgba) = (unsafe { copy_image_rgba(image, rgba_len) }) else {
+                    continue;
+                };
+                let asset = Arc::new(ImageAsset {
+                    key,
+                    width: image.width,
+                    height: image.height,
+                    rgba,
+                });
+                image_cache.insert(key, Arc::clone(&asset));
+                asset
+            };
+            screen_image_bytes = new_total;
+            assets_by_index.insert(index, Arc::clone(&asset));
+            image_assets.push(asset);
+        }
+
+        let mut images = Vec::with_capacity(raw_placements.len());
+        for placement in raw_placements {
+            let Some(asset) = assets_by_index.get(&placement.image_index) else {
+                continue;
+            };
+            let Some(layer) = image_layer(placement.layer) else {
+                continue;
+            };
+            let source_right = placement.source_x.checked_add(placement.source_width);
+            let source_bottom = placement.source_y.checked_add(placement.source_height);
+            if placement.width == 0
+                || placement.height == 0
+                || placement.source_width == 0
+                || placement.source_height == 0
+                || source_right.is_none_or(|right| right > asset.width)
+                || source_bottom.is_none_or(|bottom| bottom > asset.height)
+            {
+                continue;
+            }
+            images.push(ImagePlacement {
+                key: asset.key,
+                layer,
+                z: placement.z,
+                col: placement.col,
+                row: placement.row,
+                offset_x: placement.offset_x,
+                offset_y: placement.offset_y,
+                width: placement.width,
+                height: placement.height,
+                source_x: placement.source_x,
+                source_y: placement.source_y,
+                source_width: placement.source_width,
+                source_height: placement.source_height,
+            });
+        }
+        images.sort_by_key(|placement| (placement.layer, placement.z));
+        let visible_keys: HashSet<_> = images.iter().map(|placement| placement.key).collect();
+        image_assets.retain(|asset| visible_keys.contains(&asset.key));
+        image_cache.retain(|key, _| visible_keys.contains(key));
 
         let mut cells = Vec::with_capacity(usize::from(snapshot.rows));
         for row in raw_cells.chunks_exact(usize::from(snapshot.cols)) {
@@ -667,6 +900,10 @@ impl Snapshot {
             bracketed_paste: snapshot.bracketed_paste != 0,
             mouse_tracking: snapshot.mouse_tracking != 0,
             scrollback_offset: snapshot.scrollback_offset,
+            cell_width,
+            cell_height,
+            images,
+            image_assets,
         })
     }
 }
@@ -676,6 +913,230 @@ impl Drop for Snapshot {
         // SAFETY: this is the unique owned snapshot and it is freed exactly once.
         unsafe { griz_vt_snapshot_free(self.0.as_ptr()) }
     }
+}
+
+fn image_rgba_len(width: u32, height: u32) -> Option<usize> {
+    if width == 0 || height == 0 || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+        return None;
+    }
+    usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?
+        .checked_mul(4)
+        .filter(|len| *len <= MAX_IMAGE_BYTES)
+}
+
+fn image_layer(raw: u8) -> Option<ImageLayer> {
+    match raw {
+        0 => Some(ImageLayer::BelowBackground),
+        1 => Some(ImageLayer::BelowText),
+        2 => Some(ImageLayer::AboveText),
+        _ => None,
+    }
+}
+
+unsafe fn copy_image_rgba(image: &GrizVtImage, rgba_len: usize) -> Option<Vec<u8>> {
+    let bytes_per_pixel = match image.format {
+        0 => 3,
+        1 => 4,
+        3 => 2,
+        4 => 1,
+        _ => return None,
+    };
+    let pixels = usize::try_from(image.width)
+        .ok()?
+        .checked_mul(usize::try_from(image.height).ok()?)?;
+    let source_len = pixels.checked_mul(bytes_per_pixel)?;
+    if source_len != image.pixels_len || (source_len != 0 && image.pixels.is_null()) {
+        return None;
+    }
+    // SAFETY: the C snapshot validated this borrowed terminal-owned view and no VT mutation can
+    // occur while screen conversion holds &mut Terminal.
+    let source = unsafe { slice::from_raw_parts(image.pixels, image.pixels_len) };
+    let mut rgba = Vec::new();
+    rgba.try_reserve_exact(rgba_len).ok()?;
+    match image.format {
+        0 => {
+            for rgb in source.as_chunks::<3>().0 {
+                rgba.extend_from_slice(rgb);
+                rgba.push(255);
+            }
+        }
+        1 => rgba.extend_from_slice(source),
+        3 => {
+            for gray_alpha in source.as_chunks::<2>().0 {
+                rgba.extend_from_slice(&[
+                    gray_alpha[0],
+                    gray_alpha[0],
+                    gray_alpha[0],
+                    gray_alpha[1],
+                ]);
+            }
+        }
+        4 => {
+            for gray in source {
+                rgba.extend_from_slice(&[*gray, *gray, *gray, 255]);
+            }
+        }
+        _ => return None,
+    }
+    (rgba.len() == rgba_len).then_some(rgba)
+}
+
+fn install_png_decoder() -> Result<(), Error> {
+    let code = *PNG_DECODER_RESULT.get_or_init(|| {
+        // SAFETY: process-global installation is serialized by OnceLock and happens before this
+        // crate creates a terminal. The callback has the exact C ABI expected by Ghostty.
+        unsafe { griz_vt_install_png_decoder(decode_png) }
+    });
+    check("install PNG decoder", code)
+}
+
+unsafe extern "C" fn decode_png(
+    _userdata: *mut c_void,
+    allocator: *const GhosttyAllocator,
+    data: *const u8,
+    data_len: usize,
+    out: *mut GhosttySysImage,
+) -> bool {
+    std::panic::catch_unwind(|| {
+        // SAFETY: Ghostty guarantees callback arguments are borrowed for this call.
+        unsafe { decode_png_inner(allocator, data, data_len, out) }
+    })
+    .unwrap_or(false)
+}
+
+unsafe fn decode_png_inner(
+    allocator: *const GhosttyAllocator,
+    data: *const u8,
+    data_len: usize,
+    out: *mut GhosttySysImage,
+) -> bool {
+    if out.is_null()
+        || data_len == 0
+        || data_len > MAX_IMAGE_BYTES
+        || (data_len != 0 && data.is_null())
+    {
+        return false;
+    }
+    // SAFETY: validated above; Ghostty keeps the encoded bytes alive for this callback.
+    let encoded = unsafe { slice::from_raw_parts(data, data_len) };
+    let mut decoder = png::Decoder::new_with_limits(
+        Cursor::new(encoded),
+        png::Limits {
+            bytes: MAX_IMAGE_BYTES,
+        },
+    );
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    decoder.set_ignore_text_chunk(true);
+    decoder.set_ignore_iccp_chunk(true);
+    let Ok(mut reader) = decoder.read_info() else {
+        return false;
+    };
+    if reader.info().animation_control.is_some() {
+        return false;
+    }
+    let width = reader.info().width;
+    let height = reader.info().height;
+    let Some(rgba_len) = image_rgba_len(width, height) else {
+        return false;
+    };
+    let Some(decoded_len) = reader.output_buffer_size() else {
+        return false;
+    };
+    if decoded_len == 0 || decoded_len > MAX_IMAGE_BYTES {
+        return false;
+    }
+    let mut decoded = Vec::new();
+    if decoded.try_reserve_exact(decoded_len).is_err() {
+        return false;
+    }
+    decoded.resize(decoded_len, 0);
+    let Ok(info) = reader.next_frame(&mut decoded) else {
+        return false;
+    };
+    if info.width != width || info.height != height || info.bit_depth != png::BitDepth::Eight {
+        return false;
+    }
+    let source_len = info.buffer_size();
+    let samples = info.color_type.samples();
+    let Some(expected_source_len) = usize::try_from(width)
+        .ok()
+        .and_then(|width| width.checked_mul(usize::try_from(height).ok()?))
+        .and_then(|pixels| pixels.checked_mul(samples))
+    else {
+        return false;
+    };
+    if source_len != expected_source_len || source_len > decoded.len() {
+        return false;
+    }
+
+    // SAFETY: the allocator is valid for this callback and Ghostty takes ownership on success.
+    let pixels = unsafe { griz_vt_png_alloc(allocator, rgba_len) };
+    if pixels.is_null() {
+        return false;
+    }
+    let mut allocation = PngAllocation {
+        allocator,
+        data: pixels,
+        len: rgba_len,
+    };
+    // SAFETY: Ghostty allocated exactly rgba_len writable bytes above.
+    let destination = unsafe { slice::from_raw_parts_mut(allocation.data, rgba_len) };
+    if !convert_png_to_rgba(&decoded[..source_len], info.color_type, destination) {
+        return false;
+    }
+
+    // SAFETY: out is validated and Ghostty zeroed it before invoking the callback.
+    unsafe {
+        *out = GhosttySysImage {
+            width,
+            height,
+            data: allocation.data,
+            data_len: rgba_len,
+        };
+    }
+    allocation.data = std::ptr::null_mut();
+    true
+}
+
+fn convert_png_to_rgba(source: &[u8], color: png::ColorType, destination: &mut [u8]) -> bool {
+    let pixels = destination.len() / 4;
+    if !destination.len().is_multiple_of(4)
+        || source.len() != pixels.saturating_mul(color.samples())
+    {
+        return false;
+    }
+    match color {
+        png::ColorType::Rgba => destination.copy_from_slice(source),
+        png::ColorType::Rgb => {
+            for (rgb, rgba) in source
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(destination.as_chunks_mut::<4>().0)
+            {
+                rgba.copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+            }
+        }
+        png::ColorType::GrayscaleAlpha => {
+            for (gray_alpha, rgba) in source
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .zip(destination.as_chunks_mut::<4>().0)
+            {
+                rgba.copy_from_slice(&[gray_alpha[0], gray_alpha[0], gray_alpha[0], gray_alpha[1]]);
+            }
+        }
+        png::ColorType::Grayscale => {
+            for (gray, rgba) in source.iter().zip(destination.as_chunks_mut::<4>().0) {
+                rgba.copy_from_slice(&[*gray, *gray, *gray, 255]);
+            }
+        }
+        png::ColorType::Indexed => return false,
+    }
+    true
 }
 
 fn logical_key(event: &KeyInput) -> u16 {

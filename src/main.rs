@@ -19,12 +19,13 @@ use griz_protocol::{
     Command, Event, KeyInput, Screen, SplitDirection, TabInfo, TerminalId, ViewState, WorkspaceId,
     WorkspaceInfo,
 };
-use rune::{App, AppSpec, Ime, KeyEvent, TextEdit, Titlebar, Tx, Waker};
+use rune::{App, AppSpec, Cx, El, Ime, KeyEvent, TextEdit, Titlebar, Tx, Waker};
 use settings::{Action, Settings};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use ui::view;
 
 const TITLEBAR_HEIGHT: f32 = 44.0;
+const MAX_CELL_PIXELS: f32 = 512.0;
 
 #[derive(Clone)]
 enum Dialog {
@@ -71,6 +72,9 @@ struct State {
     zoomed_tabs: HashSet<TerminalId>,
     pane_sizes: HashMap<TerminalId, (f32, f32)>,
     pane_grids: HashMap<TerminalId, (u16, u16)>,
+    pane_cell_sizes: HashMap<TerminalId, (u16, u16)>,
+    /// Physical pixels per Rune layout point, refreshed by the root view.
+    device_scale: Cell<f32>,
     pane_interaction: panes::Interaction,
 }
 
@@ -109,6 +113,8 @@ impl Default for State {
             zoomed_tabs: HashSet::new(),
             pane_sizes: HashMap::new(),
             pane_grids: HashMap::new(),
+            pane_cell_sizes: HashMap::new(),
+            device_scale: Cell::new(1.0),
             pane_interaction: Default::default(),
         }
     }
@@ -333,6 +339,7 @@ impl State {
             .collect();
         self.pane_sizes.retain(|id, _| visible.contains(id));
         self.pane_grids.retain(|id, _| visible.contains(id));
+        self.pane_cell_sizes.retain(|id, _| visible.contains(id));
     }
 
     fn toggle_pane_zoom(&mut self, terminal_id: TerminalId) {
@@ -404,6 +411,25 @@ impl State {
             .or_else(|| snapshot.terminal.as_ref().filter(|t| t.id == id))
     }
 
+    /// The root view must refresh this from `cx.env().scale` so pane layout reports
+    /// physical cell pixels even though layout callbacks do not expose the environment.
+    pub(crate) fn set_device_scale(&self, scale: f32) {
+        self.device_scale.set(if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        });
+    }
+
+    fn physical_cell_size(&self) -> (u16, u16) {
+        let (width, height) = terminal_view::cell_size(&self.settings);
+        let scale = self.device_scale.get();
+        (
+            (width * scale).round().clamp(1.0, MAX_CELL_PIXELS) as u16,
+            (height * scale).round().clamp(1.0, MAX_CELL_PIXELS) as u16,
+        )
+    }
+
     fn layout_pane(&mut self, id: TerminalId, width: f32, height: f32) {
         // Layout callbacks are queued; a pane may have closed or its tab changed
         // before this callback runs. Do not resurrect it or resize a hidden shell.
@@ -412,15 +438,27 @@ impl State {
         }
         self.pane_sizes.insert(id, (width, height));
         let grid = terminal_view::grid_for(width, height, &self.settings);
+        let cell_size = self.physical_cell_size();
         if Some(id) == self.active_terminal() {
             self.grid = grid;
         }
-        if self.pane_grids.insert(id, grid) != Some(grid) && self.ready() {
-            self.send(Command::Resize {
-                terminal_id: id,
-                cols: grid.0,
-                rows: grid.1,
-            });
+        let grid_changed = self.pane_grids.insert(id, grid) != Some(grid);
+        let cell_size_changed = self.pane_cell_sizes.insert(id, cell_size) != Some(cell_size);
+        if self.ready() {
+            if cell_size_changed || grid_changed {
+                self.send(Command::SetCellSize {
+                    terminal_id: id,
+                    width: cell_size.0,
+                    height: cell_size.1,
+                });
+            }
+            if grid_changed {
+                self.send(Command::Resize {
+                    terminal_id: id,
+                    cols: grid.0,
+                    rows: grid.1,
+                });
+            }
         }
     }
 
@@ -551,6 +589,13 @@ impl State {
         if self.ready()
             && let Some(terminal_id) = self.active_terminal()
         {
+            let cell_size = self.physical_cell_size();
+            self.pane_cell_sizes.insert(terminal_id, cell_size);
+            self.send(Command::SetCellSize {
+                terminal_id,
+                width: cell_size.0,
+                height: cell_size.1,
+            });
             self.send(Command::Resize {
                 terminal_id,
                 cols: self.grid.0,
@@ -805,11 +850,23 @@ impl State {
         if (selection_changed || layout_changed) && self.ready() {
             for (id, (width, height)) in self.pane_sizes.clone() {
                 let grid = terminal_view::grid_for(width, height, &self.settings);
+                let cell_size = self.physical_cell_size();
                 self.pane_grids.insert(id, grid);
-                if self
-                    .pane_frame(id)
-                    .is_some_and(|t| (t.screen.cols, t.screen.rows) != grid)
-                {
+                self.pane_cell_sizes.insert(id, cell_size);
+                let Some(frame) = self.pane_frame(id) else {
+                    continue;
+                };
+                let grid_mismatch = (frame.screen.cols, frame.screen.rows) != grid;
+                let cell_size_mismatch =
+                    (frame.screen.cell_width, frame.screen.cell_height) != cell_size;
+                if cell_size_mismatch || grid_mismatch {
+                    self.send(Command::SetCellSize {
+                        terminal_id: id,
+                        width: cell_size.0,
+                        height: cell_size.1,
+                    });
+                }
+                if grid_mismatch {
                     self.send(Command::Resize {
                         terminal_id: id,
                         cols: grid.0,
@@ -1182,6 +1239,29 @@ fn on_ime(state: &mut State, event: &Ime, tx: &mut Tx) -> bool {
         _ => {}
     }
     true
+}
+
+fn view(state: &State, cx: &mut Cx<State>) -> El {
+    state.set_device_scale(cx.env().scale);
+    // A monitor/DPI change can leave every point-space pane rect unchanged. Rune's
+    // ordinary layout watchers then do not fire. Remount this inert probe only when
+    // scale changes, so a queued state callback refreshes physical cell geometry.
+    ui::view(state, cx).child(
+        rune::el()
+            .key(format!(
+                "terminal-device-scale-{}",
+                state.device_scale.get().to_bits()
+            ))
+            .size(0.0, 0.0)
+            .absolute(0.0, 0.0)
+            .inert()
+            .on_layout_tx(|state: &mut State, _, tx| {
+                for (id, (width, height)) in state.pane_sizes.clone() {
+                    state.layout_pane(id, width, height);
+                }
+                tx.live_only();
+            }),
+    )
 }
 
 fn main() {

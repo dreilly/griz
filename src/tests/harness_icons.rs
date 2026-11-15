@@ -167,7 +167,7 @@ fn clicking_a_tab_logo_selects_its_terminal_without_closing_it() {
     click(&mut rt, "tab-2-harness-pi");
     let sent: Vec<_> = commands(&outgoing)
         .into_iter()
-        .filter(|(_, c)| !matches!(c, Command::Resize { .. }))
+        .filter(|(_, c)| !matches!(c, Command::Resize { .. } | Command::SetCellSize { .. }))
         .collect();
     assert_eq!(sent.len(), 1);
     assert!(matches!(
