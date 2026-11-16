@@ -1,6 +1,9 @@
 //! Program-reported OSC 7501 records across every workspace and terminal pane.
 use crate::{Command, State, harness_icons::Harness, ui::Palette, workspace_ui::accent_color};
-use griz_protocol::{AgentStatus, ProgramStatusKind, ProgramStatusRecord, TerminalId, WorkspaceId};
+use griz_protocol::{
+    AgentInfo, AgentStatus, ProgramStatusKind, ProgramStatusRecord, TerminalId, TerminalInfo,
+    WorkspaceId, WorkspaceInfo,
+};
 use rune::{Color, El, col, el, oklch, row, text};
 
 const COMPLETION_FADE: &[rune::Beat] = &[
@@ -110,6 +113,255 @@ fn record_label(record: &ProgramStatusRecord) -> String {
         .unwrap_or_else(|| "Program".into())
 }
 
+fn record_detail(record: &ProgramStatusRecord) -> String {
+    let message = display_text(&record.message);
+    match (message.is_empty(), record.progress) {
+        (true, None) => String::new(),
+        (true, Some(progress)) => format!("{progress}%"),
+        (false, None) => message,
+        (false, Some(progress)) => format!("{message} · {progress}%"),
+    }
+}
+
+fn record_kind(record: &ProgramStatusRecord) -> &'static str {
+    match record.kind {
+        Some(ProgramStatusKind::Permission) => "Approval",
+        Some(ProgramStatusKind::Question) => "Question",
+        Some(ProgramStatusKind::Auth) => "Authentication",
+        None => "",
+    }
+}
+
+pub(crate) fn workspace_agent_count(workspace: &WorkspaceInfo) -> usize {
+    workspace
+        .terminals
+        .iter()
+        .map(|terminal| terminal.agents.len())
+        .sum()
+}
+
+pub(crate) fn workspace_unread_count(workspace: &WorkspaceInfo) -> usize {
+    workspace
+        .terminals
+        .iter()
+        .flat_map(|terminal| &terminal.agents)
+        .filter(|agent| agent.unread)
+        .count()
+}
+
+pub(crate) fn workspace_notification_color(workspace: &WorkspaceInfo, p: &Palette) -> Color {
+    for status in [
+        AgentStatus::Error,
+        AgentStatus::Blocked,
+        AgentStatus::Done,
+        AgentStatus::Working,
+        AgentStatus::Idle,
+    ] {
+        if workspace
+            .terminals
+            .iter()
+            .flat_map(|terminal| &terminal.agents)
+            .any(|agent| agent.unread && agent.record.status == status)
+        {
+            return status_color(status, p);
+        }
+    }
+    p.accent
+}
+
+fn workspace_activity_status(workspace: &WorkspaceInfo) -> Option<AgentStatus> {
+    let has_unread = workspace
+        .terminals
+        .iter()
+        .flat_map(|terminal| &terminal.agents)
+        .any(|agent| agent.unread);
+    let order = if has_unread {
+        [
+            AgentStatus::Error,
+            AgentStatus::Blocked,
+            AgentStatus::Done,
+            AgentStatus::Working,
+            AgentStatus::Idle,
+        ]
+    } else {
+        [
+            AgentStatus::Working,
+            AgentStatus::Blocked,
+            AgentStatus::Error,
+            AgentStatus::Done,
+            AgentStatus::Idle,
+        ]
+    };
+    order.into_iter().find(|status| {
+        workspace
+            .terminals
+            .iter()
+            .flat_map(|terminal| &terminal.agents)
+            .any(|agent| agent.record.status == *status && (!has_unread || agent.unread))
+    })
+}
+
+fn workspace_agent_button(
+    state: &State,
+    workspace: &WorkspaceInfo,
+    terminal: &TerminalInfo,
+    agent: &AgentInfo,
+    p: &Palette,
+) -> El {
+    let workspace_id = workspace.id;
+    let terminal_id = terminal.id;
+    let id = agent.record.id.clone();
+    let generation = agent.generation;
+    let revision = agent.record.revision;
+    let label = record_label(&agent.record);
+    let detail = record_detail(&agent.record);
+    let kind = record_kind(&agent.record);
+    let harness = Harness::from_app(&agent.record.app);
+    let suffix = if id.is_empty() {
+        terminal_id.to_string()
+    } else {
+        format!("{terminal_id}:{id}")
+    };
+    let key = format!("workspace-{workspace_id}-agent-{suffix}");
+    let notification = if agent.unread {
+        " · new notification"
+    } else {
+        ""
+    };
+    row()
+        .key(key.clone())
+        .role("button")
+        .label(format!(
+            "{label} · {} · {} · {}{notification}",
+            harness.name(),
+            terminal.label,
+            status_label(agent.record.status),
+        ))
+        .help(format!(
+            "{label} · {} · {} · {kind} · {detail}",
+            terminal.label,
+            display_text(&terminal.directory)
+        ))
+        .focusable(true)
+        .disabled(!state.ready())
+        .h((p.section.line_px() + 4.0).max(18.0))
+        .px(2.0)
+        .center_y()
+        .radius(3.0)
+        .hover(p.ink.alpha(0.08))
+        .focus_ring(2.0, 2.0, accent_color(workspace.accent))
+        .child(harness.badge_sized(format!("{key}-harness-icon"), p.section.size.max(12.0), p))
+        .on_press_tx(move |s: &mut State, tx| {
+            focus(s, workspace_id, terminal_id, &id, generation, revision);
+            tx.blur();
+        })
+}
+
+pub(crate) fn workspace_summary(
+    state: &State,
+    workspace: &WorkspaceInfo,
+    p: &Palette,
+) -> Option<El> {
+    let agents: Vec<_> = workspace
+        .terminals
+        .iter()
+        .flat_map(|terminal| terminal.agents.iter().map(move |agent| (terminal, agent)))
+        .collect();
+    if agents.is_empty() {
+        return None;
+    }
+    let unread = agents.iter().filter(|(_, agent)| agent.unread).count();
+    let status = workspace_activity_status(workspace)?;
+    let color = if unread > 0 {
+        workspace_notification_color(workspace, p)
+    } else {
+        status_color(status, p)
+    };
+    let blue = oklch(0.75, 0.12, 250.0);
+    let mut summary =
+        row()
+            .key(format!("workspace-{}-agents", workspace.id))
+            .role("group")
+            .label(format!(
+                "{} agent{} · {}{}",
+                agents.len(),
+                if agents.len() == 1 { "" } else { "s" },
+                status_label(status),
+                if unread > 0 {
+                    format!(
+                        " · {unread} new notification{}",
+                        if unread == 1 { "" } else { "s" }
+                    )
+                } else {
+                    String::new()
+                }
+            ))
+            .w_full()
+            .min_w(0.0)
+            .pt(6.0)
+            .gap(2.0)
+            .center_y()
+            .flex_wrap()
+            .children(agents.iter().map(|(terminal, agent)| {
+                workspace_agent_button(state, workspace, terminal, agent, p)
+            }))
+            .child(el().grow(1.0))
+            .child(
+                text(if unread > 0 { "●" } else { "○" })
+                    .key(format!("workspace-{}-agent-activity", workspace.id))
+                    .role("status")
+                    .label(format!(
+                        "{}{}",
+                        status_label(status),
+                        if unread > 0 {
+                            " · new notification"
+                        } else {
+                            ""
+                        }
+                    ))
+                    .font(p.section)
+                    .color(color),
+            );
+    for (terminal, agent) in agents {
+        let Some(sweep) =
+            state
+                .completion_sweeps
+                .get(&(terminal.id, agent.record.id.clone(), agent.generation))
+        else {
+            continue;
+        };
+        let suffix = if agent.record.id.is_empty() {
+            terminal.id.to_string()
+        } else {
+            format!("{}:{}", terminal.id, agent.record.id)
+        };
+        summary = summary.child(
+            el().key(format!(
+                "workspace-{}-agent-{suffix}-completion-clip",
+                workspace.id
+            ))
+            .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+            .clip_rounded(4.0)
+            .sequence(rune::Sequence::new(COMPLETION_FADE))
+            .child(
+                el().key(format!(
+                    "workspace-{}-agent-{suffix}-completion-sweep",
+                    workspace.id
+                ))
+                .pin(Some(0.0), Some(0.0), None, Some(0.0))
+                .w(76.0)
+                .linear_gradient(
+                    std::f32::consts::FRAC_PI_2,
+                    [(0.0, blue.alpha(0.0)), (0.65, blue), (1.0, blue.alpha(0.0))],
+                )
+                .live_offset(&sweep.offset)
+                .live_opacity(&sweep.opacity),
+            ),
+        );
+    }
+    Some(summary)
+}
+
 pub(crate) fn section(state: &State, p: &Palette) -> El {
     let agents: Vec<_> = state
         .snapshot
@@ -184,19 +436,8 @@ pub(crate) fn section(state: &State, p: &Palette) -> El {
                 Some(name) => format!("{name} · {directory_name} · {terminal_label}"),
                 None => format!("{directory_name} · {terminal_label}"),
             };
-            let message = display_text(&record.message);
-            let detail = match (message.is_empty(), record.progress) {
-                (true, None) => String::new(),
-                (true, Some(progress)) => format!("{progress}%"),
-                (false, None) => message,
-                (false, Some(progress)) => format!("{message} · {progress}%"),
-            };
-            let kind = match record.kind {
-                Some(ProgramStatusKind::Permission) => "Approval",
-                Some(ProgramStatusKind::Question) => "Question",
-                Some(ProgramStatusKind::Auth) => "Authentication",
-                None => "",
-            };
+            let detail = record_detail(record);
+            let kind = record_kind(record);
             let active = state.snapshot.as_ref().is_some_and(|s| {
                 s.active_workspace == workspace_id && s.active_terminal == Some(terminal_id)
             });

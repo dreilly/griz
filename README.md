@@ -13,11 +13,11 @@
 
 ## Workspaces, split panes, and agent status
 
-Keep development servers, shells, and coding agents in separate panes, grouped into workspaces and tabs. The Agents sidebar shows reported status across all workspaces, including panes you aren’t currently viewing.
+Keep development servers, shells, and coding agents in separate panes, grouped into workspaces and tabs. The sidebar shows reported status across all workspaces, including panes you aren’t currently viewing. Settings can keep a full Agents list or fold agent status into each workspace card.
 
 - **Organize terminals.** Split a tab into up to eight panes, resize and rearrange them, or zoom a single pane.
 - **Track agent status.** Working agents have a pulsing border. Completed agents have a solid border and a brief completion animation.
-- **See unread alerts.** When an agent reports completion, a request for input, or an error, its card gets a filled dot and is included in the sidebar’s unread notification count. Click the card to open its exact terminal pane, or focus that pane yourself, to clear its unread alerts. Alerts for other panes stay unread. These are in-app indicators, not macOS notifications.
+- **See unread alerts.** When an agent reports completion, a request for input, or an error, its card or workspace marker gets a filled indicator and is included in the sidebar’s unread notification count. Click it to open the exact terminal pane, or focus that pane yourself, to clear its unread alerts. Alerts for other panes stay unread. These are in-app indicators, not macOS notifications.
 - **Search and switch terminals.** Press `⌘P` to search workspaces and terminals and preview a terminal before switching to it. Press `⇧⌘P` to find commands such as creating a terminal or changing the layout.
 - **Reconnect to running sessions.** The terminal core runs separately from the GUI. Closing and reopening the window reconnects to sessions while that core is still running.
 

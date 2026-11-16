@@ -83,6 +83,10 @@ impl Harness {
     }
 
     pub(crate) fn badge(self, key: impl Into<String>, p: &Palette) -> El {
+        self.badge_sized(key, p.label.line_px().max(16.0), p)
+    }
+
+    pub(crate) fn badge_sized(self, key: impl Into<String>, size: f32, p: &Palette) -> El {
         let mark = match self {
             Self::Pi => &PI,
             Self::Claude => &CLAUDE,
@@ -91,7 +95,7 @@ impl Harness {
             Self::OpenCode => &OPENCODE,
             Self::Terminal | Self::Other => &PROGRAM,
         };
-        icon(mark, p.label.line_px().max(16.0))
+        icon(mark, size)
             .key(key)
             .label(self.name())
             .help(self.name())

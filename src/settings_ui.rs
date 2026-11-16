@@ -1,7 +1,7 @@
 //! Settings presentation; the typed model and persistence stay in settings.rs.
 use crate::{
     State,
-    settings::{self, Action, Font, Settings, TerminalWhites, Theme},
+    settings::{self, Action, Font, Settings, SidebarAgents, TerminalWhites, Theme},
     ui::{Palette, button},
 };
 use griz_protocol::WorkspaceAccent;
@@ -235,6 +235,50 @@ fn workspace_accent(state: &State, p: &Palette) -> El {
         )
 }
 
+fn sidebar_agents(state: &State, p: &Palette) -> El {
+    let mut choices = row()
+        .key("settings-sidebar-agents")
+        .flex_wrap()
+        .gap(6.0)
+        .role("radiogroup")
+        .label("Agent placement")
+        .focus_group();
+    for layout in SidebarAgents::ALL {
+        let selected = state.settings.sidebar_agents == layout;
+        let key = match layout {
+            SidebarAgents::Separate => "separate",
+            SidebarAgents::WorkspaceCards => "workspace-cards",
+        };
+        choices = choices.child(
+            button(format!("settings-sidebar-agents-{key}"), layout.name(), p)
+                .role("radio")
+                .checked(selected)
+                .focus_selected(selected)
+                .fill(if selected {
+                    p.ink.alpha(0.12)
+                } else {
+                    Color::TRANSPARENT
+                })
+                .border(1.0, if selected { p.accent } else { p.line })
+                .on_press(move |s: &mut State| {
+                    s.settings.sidebar_agents = layout;
+                    s.settings_changed();
+                }),
+        );
+    }
+    row()
+        .w_full()
+        .center_y()
+        .flex_wrap()
+        .gap(14.0)
+        .child(setting_label(
+            "Agent placement",
+            "Keep the full Agents list, or fold status and notifications into workspace cards.",
+            p,
+        ))
+        .child(choices)
+}
+
 fn terminal_whites(state: &State, p: &Palette) -> El {
     let mut choices = row()
         .key("settings-terminal-whites")
@@ -340,6 +384,7 @@ fn appearance(state: &State, p: &Palette) -> El {
                 .child(themes),
         )
         .child(workspace_accent(state, p))
+        .child(sidebar_agents(state, p))
         .child(terminal_whites(state, p))
         .child(divider(p))
         .child(
@@ -475,6 +520,7 @@ fn appearance(state: &State, p: &Palette) -> El {
                         s.settings.font_size = defaults.font_size;
                         s.settings.theme = defaults.theme;
                         s.settings.terminal_whites = defaults.terminal_whites;
+                        s.settings.sidebar_agents = defaults.sidebar_agents;
                         s.settings.default_workspace_accent = defaults.default_workspace_accent;
                         s.settings.random_workspace_accent = defaults.random_workspace_accent;
                         s.settings_changed();

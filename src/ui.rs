@@ -220,11 +220,35 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
             let id = workspace.id;
             let active = snapshot.active_workspace == id;
             let accent = crate::workspace_ui::accent_color(workspace.accent);
+            let agent_count = crate::agents_ui::workspace_agent_count(workspace);
+            let unread = crate::agents_ui::workspace_unread_count(workspace);
+            let combined =
+                state.settings.sidebar_agents == crate::settings::SidebarAgents::WorkspaceCards;
+            let notification_color = crate::agents_ui::workspace_notification_color(workspace, &p);
             workspaces = workspaces.child(
                 col()
                     .key(format!("workspace-{id}"))
                     .role("button")
-                    .label(format!("Switch to workspace {}", workspace.name))
+                    .label(format!(
+                        "Switch to workspace {}{}{}",
+                        workspace.name,
+                        if combined && agent_count > 0 {
+                            format!(
+                                " · {agent_count} agent{}",
+                                if agent_count == 1 { "" } else { "s" }
+                            )
+                        } else {
+                            String::new()
+                        },
+                        if combined && unread > 0 {
+                            format!(
+                                " · {unread} new notification{}",
+                                if unread == 1 { "" } else { "s" }
+                            )
+                        } else {
+                            String::new()
+                        },
+                    ))
                     .help(workspace.directory.clone())
                     .focusable(true)
                     .disabled(!state.ready())
@@ -233,6 +257,8 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     .radius(6.0)
                     .fill(if active {
                         accent.alpha(0.12)
+                    } else if combined && unread > 0 {
+                        notification_color.alpha(0.08)
                     } else {
                         Color::TRANSPARENT
                     })
@@ -253,6 +279,11 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                             .font(p.label)
                             .color(accent)
                             .truncate(),
+                    )
+                    .children(
+                        combined
+                            .then(|| crate::agents_ui::workspace_summary(state, workspace, &p))
+                            .flatten(),
                     ),
             );
         }
@@ -286,7 +317,10 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                     .child(sidebar_toggle(state, &p)),
             )
             .child(workspaces)
-            .child(crate::agents_ui::section(state, &p))
+            .children(
+                (state.settings.sidebar_agents == crate::settings::SidebarAgents::Separate)
+                    .then(|| crate::agents_ui::section(state, &p)),
+            )
     } else {
         col()
             .key("sidebar-rail")

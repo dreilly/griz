@@ -80,6 +80,24 @@ impl TerminalWhites {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SidebarAgents {
+    #[default]
+    Separate,
+    WorkspaceCards,
+}
+
+impl SidebarAgents {
+    pub const ALL: [Self; 2] = [Self::Separate, Self::WorkspaceCards];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Separate => "Separate list",
+            Self::WorkspaceCards => "Workspace cards",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     NewTerminal,
@@ -270,6 +288,7 @@ pub struct Settings {
     pub font_size: f32,
     pub theme: Theme,
     pub terminal_whites: TerminalWhites,
+    pub sidebar_agents: SidebarAgents,
     pub default_workspace_accent: WorkspaceAccent,
     pub random_workspace_accent: bool,
     /// Missing means the default; an empty string explicitly disables a shortcut.
@@ -285,6 +304,7 @@ impl Default for Settings {
             font_size: 14.0,
             theme: Theme::default(),
             terminal_whites: TerminalWhites::default(),
+            sidebar_agents: SidebarAgents::default(),
             default_workspace_accent: WorkspaceAccent::Green,
             random_workspace_accent: true,
             bindings: BTreeMap::new(),
@@ -386,6 +406,17 @@ impl Settings {
                     .find(|whites| whites.name() == name)
             }) {
                 settings.terminal_whites = whites;
+            } else {
+                invalid = true;
+            }
+        }
+        if let Some(value) = values.get("sidebar_agents") {
+            if let Some(layout) = value.as_str().and_then(|name| {
+                SidebarAgents::ALL
+                    .into_iter()
+                    .find(|layout| layout.name() == name)
+            }) {
+                settings.sidebar_agents = layout;
             } else {
                 invalid = true;
             }
@@ -495,6 +526,7 @@ impl Settings {
         value.insert("font_size".into(), self.font_size.into());
         value.insert("theme".into(), self.theme.name().into());
         value.insert("terminal_whites".into(), self.terminal_whites.name().into());
+        value.insert("sidebar_agents".into(), self.sidebar_agents.name().into());
         // The style picker has been retired; all workspace buttons are Soft.
         value.remove("workspace_button_style");
         value.insert(

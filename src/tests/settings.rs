@@ -1,5 +1,5 @@
 use super::*;
-use crate::settings::{Action, Font, Settings, TerminalWhites, Theme};
+use crate::settings::{Action, Font, Settings, SidebarAgents, TerminalWhites, Theme};
 use griz_protocol::WorkspaceAccent;
 use rune::{Chord, Key, Mods, prefs::Prefs};
 
@@ -92,7 +92,37 @@ fn appearance_is_live_reflows_the_pty_and_can_be_reset() {
     assert_eq!(rt.state.settings.font_size, 14.0);
     assert_eq!(rt.state.settings.font, Font::Menlo);
     assert_eq!(rt.state.settings.theme, Theme::Dark);
+    assert_eq!(rt.state.settings.sidebar_agents, SidebarAgents::Separate);
     assert_eq!(rt.state.grid, original_grid);
+}
+
+#[test]
+fn agent_placement_is_live_persistent_and_resettable() {
+    let (state, outgoing) = mock();
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    open_settings(&mut rt);
+    assert_eq!(rt.state.settings.sidebar_agents, SidebarAgents::Separate);
+    commands(&outgoing);
+    click(&mut rt, "settings-sidebar-agents-workspace-cards");
+    assert_eq!(
+        rt.state.settings.sidebar_agents,
+        SidebarAgents::WorkspaceCards
+    );
+    assert_eq!(
+        Settings::from_store(&rt.state.prefs).0.sidebar_agents,
+        SidebarAgents::WorkspaceCards
+    );
+    assert!(commands(&outgoing).is_empty());
+    click(&mut rt, "settings-sidebar-agents-separate");
+    assert_eq!(rt.state.settings.sidebar_agents, SidebarAgents::Separate);
+    rt.update(|_, tx| {
+        tx.scroll_into_view("settings-appearance-reset");
+        tx.instant();
+    });
+    rt.frame(0.0);
+    rt.state.settings.sidebar_agents = SidebarAgents::WorkspaceCards;
+    click(&mut rt, "settings-appearance-reset");
+    assert_eq!(rt.state.settings.sidebar_agents, SidebarAgents::Separate);
 }
 
 #[test]
@@ -311,6 +341,7 @@ fn preferences_round_trip_with_disabled_bindings_and_missing_defaults() {
     settings.font_size = 19.0;
     settings.theme = Theme::Midnight;
     settings.terminal_whites = TerminalWhites::Softer;
+    settings.sidebar_agents = SidebarAgents::WorkspaceCards;
     settings.default_workspace_accent = WorkspaceAccent::Purple;
     settings.random_workspace_accent = false;
     settings
@@ -324,6 +355,7 @@ fn preferences_round_trip_with_disabled_bindings_and_missing_defaults() {
     assert_eq!(loaded.font_size, 19.0);
     assert_eq!(loaded.theme, Theme::Midnight);
     assert_eq!(loaded.terminal_whites, TerminalWhites::Softer);
+    assert_eq!(loaded.sidebar_agents, SidebarAgents::WorkspaceCards);
     assert_eq!(loaded.default_workspace_accent, WorkspaceAccent::Purple);
     assert_eq!(
         loaded.chord(Action::ToggleSidebar),
@@ -347,6 +379,7 @@ fn malformed_or_invalid_preferences_fall_back_without_panicking() {
                 "font_size": 999,
                 "font": "not installed",
                 "theme": 42,
+                "sidebar_agents": "unknown",
                 "default_workspace_accent": "unknown",
                 "keybindings": { "sidebar.toggle": "mod+t", "terminal.new": "nonsense key" }
             }),
@@ -357,6 +390,7 @@ fn malformed_or_invalid_preferences_fall_back_without_panicking() {
     assert_eq!(settings.font_size, 14.0);
     assert_eq!(settings.font, Font::Menlo);
     assert_eq!(settings.theme, Theme::Dark);
+    assert_eq!(settings.sidebar_agents, SidebarAgents::Separate);
     assert_eq!(settings.default_workspace_accent, WorkspaceAccent::Green);
     prefs
         .set("settings", &serde_json::json!({"font_size": 16}))
@@ -451,6 +485,8 @@ fn appearance_controls_fit_small_windows_and_large_fonts_without_horizontal_over
             "settings-accent-green",
             "settings-accent-graphite",
             "settings-accent-random",
+            "settings-sidebar-agents-separate",
+            "settings-sidebar-agents-workspace-cards",
             "settings-whites-Original",
             "settings-whites-Soft",
             "settings-whites-Softer",

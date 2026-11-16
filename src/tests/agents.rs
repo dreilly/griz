@@ -57,6 +57,78 @@ fn agents_are_listed_across_workspaces_below_workspaces_and_within_the_sidebar()
 }
 
 #[test]
+fn agents_can_be_folded_into_workspace_cards_with_compact_icons_and_notifications() {
+    let (mut state, _) = agent_state();
+    state.settings.sidebar_agents = crate::settings::SidebarAgents::WorkspaceCards;
+    state.snapshot.as_mut().unwrap().workspaces[0].terminals[0].agents =
+        vec![agent("review", AgentStatus::Blocked, true)];
+    let rt = make_runtime(state, (1100.0, 720.0));
+    assert!(rt.find("agents-section").is_none());
+    for key in [
+        "workspace-1-agents",
+        "workspace-1-agent-1:review",
+        "workspace-1-agent-2",
+        "workspace-1-agent-1:review-harness-icon",
+        "workspace-1-agent-2-harness-icon",
+        "workspace-1-agent-activity",
+        "workspace-2-agent-3",
+        "workspace-2-agent-3-harness-icon",
+        "workspace-2-agent-activity",
+    ] {
+        assert!(rt.find(key).is_some(), "missing {key}");
+    }
+    for key in [
+        "workspace-1-agent-1:review-activity",
+        "workspace-1-agent-2-activity",
+        "workspace-1-agent-2-status-border",
+        "workspace-1-agent-notifications",
+        "workspace-2-agent-3-status-border",
+    ] {
+        assert!(rt.find(key).is_none(), "unexpected {key}");
+    }
+    let icon = rt.presented("workspace-2-agent-3-harness-icon").unwrap().0;
+    assert!(icon[2] < 16.0 && icon[3] < 16.0);
+    let first = rt
+        .presented("workspace-1-agent-1:review-harness-icon")
+        .unwrap()
+        .0;
+    let second = rt.presented("workspace-1-agent-2-harness-icon").unwrap().0;
+    assert!(first[0] < second[0]);
+    let summary = rt.presented("workspace-1-agents").unwrap().0;
+    let workspace = rt.presented("workspace-1").unwrap().0;
+    assert!(summary[2] > workspace[2] * 0.75);
+    let activity = rt
+        .elements()
+        .into_iter()
+        .find(|e| e.key.as_deref() == Some("workspace-1-agent-activity"))
+        .unwrap();
+    assert_eq!(activity.text.as_deref(), Some("●"));
+}
+
+#[test]
+fn clicking_a_workspace_agent_acknowledges_and_focuses_its_exact_pane() {
+    let (mut state, outgoing) = agent_state();
+    state.settings.sidebar_agents = crate::settings::SidebarAgents::WorkspaceCards;
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    rt.frame(0.0);
+    commands(&outgoing);
+    click(&mut rt, "workspace-2-agent-3");
+    let sent = commands(&outgoing);
+    assert_eq!(sent.len(), 3);
+    assert!(matches!(&sent[0].1, Command::AcknowledgeAgent {
+        terminal_id: 3, generation: 1, id, revision: 4,
+    } if id.is_empty()));
+    assert!(matches!(
+        sent[1].1,
+        Command::SelectWorkspace { workspace_id: 2 }
+    ));
+    assert!(matches!(
+        sent[2].1,
+        Command::SelectTerminal { terminal_id: 3 }
+    ));
+}
+
+#[test]
 fn clicking_an_agent_acknowledges_only_its_revision_and_gates_input_until_exact_pane_selection() {
     let (state, outgoing) = agent_state();
     let mut rt = make_runtime(state, (1100.0, 720.0));
@@ -383,6 +455,37 @@ fn completion_sweeps_only_live_transitions_and_keeps_other_agents_untouched() {
     rt.frame(0.0);
     assert_eq!(sweep(&rt).opacity, 0.0);
     assert!(rt.find("agent-3-completion-sweep").is_none());
+}
+
+#[test]
+fn combined_workspace_completion_wave_spans_the_full_summary_without_a_border() {
+    let (mut state, _) = agent_state();
+    state.settings.sidebar_agents = crate::settings::SidebarAgents::WorkspaceCards;
+    let mut next = state.snapshot.clone().unwrap();
+    next.workspaces[0].terminals[1].agents[0].record.status = AgentStatus::Done;
+    next.workspaces[0].terminals[1].agents[0].record.revision = 5;
+    state.apply(next);
+    let mut rt = make_runtime(state, (1100.0, 720.0));
+    rt.frame(0.0);
+    assert!(rt.find("workspace-1-agent-2-status-border").is_none());
+    let summary = rt.presented("workspace-1-agents").unwrap().0;
+    let clip = rt
+        .presented("workspace-1-agent-2-completion-clip")
+        .unwrap()
+        .0;
+    assert_eq!(clip, summary);
+    let initial = rt
+        .presented("workspace-1-agent-2-completion-sweep")
+        .unwrap()
+        .0;
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
+    let later = rt
+        .presented("workspace-1-agent-2-completion-sweep")
+        .unwrap()
+        .0;
+    assert!(later[0] > initial[0]);
 }
 
 #[test]

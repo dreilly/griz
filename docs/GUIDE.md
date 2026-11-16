@@ -210,7 +210,13 @@ separate operations. Tab renaming/reordering are not implemented yet.
 ## Agents
 
 The **Agents** section below Workspaces lists programs reporting status across
-**all** workspaces, tabs, and split panes. It uses the
+**all** workspaces, tabs, and split panes. In **Settings → Appearance → Agent
+placement**, choose **Workspace cards** to hide that separate section and fold the
+same status into each workspace. Records become small clickable harness icons
+from left to right in one full-width row, with a single activity indicator at the
+end. The compact row has no status border; completion sweeps still cross the full
+row. Unread indicators, notice colors, and exact-pane
+navigation remain available in either layout. It uses the
 [Program Status Protocol (OSC 7501)](https://www.superlogical.com/rex/docs/build/program-status),
 not screen scraping, process-name detection, or harness-specific extensions.
 
@@ -235,7 +241,7 @@ used or shipped.
 
 ### Harness logos
 
-Agent cards and numbered tabs show bundled logos for **Pi**, **Claude Code**,
+Agent cards, integrated workspace markers, and numbered tabs show bundled logos for **Pi**, **Claude Code**,
 **Codex**, **Gemini CLI**, and **OpenCode**, based on the report's `app` identity.
 Unknown programs get a generic terminal mark; ordinary shells show a terminal
 icon beside their tab number. Quick Open uses the same terminal fallback when
@@ -372,6 +378,9 @@ menu. Settings opens as an in-app modal panel, including while disconnected.
   shared workspace state when a workspace is created. A fresh core's initial workspace
   uses the first attaching GUI's saved default too, before its first view is shown.
   Reconnecting to an existing core never overrides workspace colors.
+  **Agent placement** defaults to **Separate list** for the full cross-workspace
+  Agents section. Choose **Workspace cards** to compare the compact layout; the
+  preference applies immediately and is saved locally.
   Regular action buttons use a fixed **Soft** style with a subtle neutral fill,
   rounded corners, and consistent hover, press, and keyboard focus states. There
   is no button-style picker; older style preferences are ignored.
