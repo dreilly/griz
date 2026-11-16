@@ -50,6 +50,17 @@ GRIZ_SOCKET="$preview_dir/core.sock" ./target/debug/griz
 GRIZ_SOCKET="$preview_dir/core.sock" ./target/debug/griz-core --stop
 ```
 
+Start the GUI with `--debug` to add a live session inspector on the right. It shows
+connection/core details, the active workspace and terminal IDs, shell generation and
+PID, directories, pane geometry, terminal modes, cursor state, and agent counts without
+including terminal contents:
+
+```sh
+./scripts/dev.sh --debug
+# Or for an installed build:
+open -na Griz --args --debug
+```
+
 ## Sharing an early test build (Apple Silicon)
 
 Build a self-contained macOS app and tester zip with:

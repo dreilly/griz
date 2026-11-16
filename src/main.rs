@@ -3,6 +3,7 @@ mod agents_ui;
 mod breakout;
 mod client;
 mod command_palette;
+mod debug_ui;
 mod harness_icons;
 mod input;
 mod launch;
@@ -39,6 +40,7 @@ enum Dialog {
 
 struct State {
     sidebar_open: bool,
+    debug: bool,
     snapshot: Option<ViewState>,
     client: Option<client::Client>,
     wake: Option<Waker>,
@@ -82,6 +84,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             sidebar_open: true,
+            debug: false,
             snapshot: None,
             client: None,
             wake: None,
@@ -1270,7 +1273,9 @@ fn main() {
     let mut rune_args = Vec::new();
     let mut initial = State::default();
     while let Some(arg) = args.next() {
-        if arg == "--frame" {
+        if arg == "--debug" {
+            initial.debug = true;
+        } else if arg == "--frame" {
             let result = args
                 .next()
                 .ok_or("--frame needs a JSON view event file".to_string())

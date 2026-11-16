@@ -65,6 +65,7 @@ fn snapshot() -> ViewState {
         initial_cwd: "/tmp".into(),
         directory: "/tmp".into(),
         shell_pid: id as u32 + 100,
+        generation: 1,
         exited: None,
         agents: vec![],
     };
@@ -194,6 +195,39 @@ fn first_frame_has_workspaces_tabs_and_a_terminal_viewport() {
     assert_eq!(size(&rt, "root"), [1100.0, 720.0]);
     let [width, height] = size(&rt, "terminal");
     assert!(width > 800.0 && height > 500.0);
+}
+
+#[test]
+fn debug_mode_adds_a_live_session_inspector_without_changing_the_default_ui() {
+    let normal = runtime((1300.0, 720.0));
+    assert!(normal.find("debug-panel").is_none());
+    assert!(normal.find("debug-badge").is_none());
+
+    let (mut state, _) = mock();
+    state.debug = true;
+    let debug = make_runtime(state, (1300.0, 720.0));
+    for key in [
+        "debug-panel",
+        "debug-badge",
+        "debug-section-process",
+        "debug-section-workspace",
+        "debug-section-terminal-session",
+        "debug-section-live-frame",
+    ] {
+        assert!(debug.find(key).is_some(), "missing {key}");
+    }
+    let text_for = |key: &str| {
+        debug
+            .elements()
+            .iter()
+            .find(|element| element.key.as_deref() == Some(key))
+            .and_then(|element| element.text.clone())
+            .unwrap_or_else(|| panic!("missing text for {key}"))
+    };
+    assert_eq!(text_for("debug-value-core-pid"), "42");
+    assert_eq!(text_for("debug-value-shell-pid"), "101");
+    assert_eq!(text_for("debug-value-generation"), "1");
+    assert_eq!(text_for("debug-value-grid"), "80 × 24");
 }
 
 #[test]

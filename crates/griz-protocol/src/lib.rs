@@ -426,6 +426,9 @@ pub struct TerminalInfo {
     /// Retains its last known value after shell exit, independently of client selection.
     pub directory: String,
     pub shell_pid: u32,
+    /// Monotonic shell incarnation for this terminal ID; increments after restart.
+    #[serde(default)]
+    pub generation: u64,
     pub exited: Option<String>,
     /// OSC 7501 records from this terminal, with client-independent attention state.
     #[serde(default)]

@@ -149,6 +149,16 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .border_sides([0.0, 0.0, 1.0, 0.0], p.chrome_line)
         .window_drag()
         .child(text("griz").font(p.title).color(p.ink))
+        .children(state.debug.then(|| {
+            text("DEBUG")
+                .key("debug-badge")
+                .font(p.section)
+                .color(p.accent)
+                .px(7.0)
+                .py(3.0)
+                .radius(4.0)
+                .fill(p.accent.alpha(0.12))
+        }))
         .child(el().grow(1.0))
         .child(
             row()
@@ -477,7 +487,8 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 .min_h(0.0)
                 .w_full()
                 .child(sidebar)
-                .child(terminal),
+                .child(terminal)
+                .children(state.debug.then(|| crate::debug_ui::panel(state, &p))),
         )
         .children(state.terminal_mouse.copied_until.map(|_| {
             row()
