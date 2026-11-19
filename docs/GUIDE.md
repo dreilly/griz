@@ -425,10 +425,12 @@ input, and macOS Option-composed characters remain Unicode text.
 Rune currently gives Griz logical key presses, an auto-repeat flag, and usually a
 physical code plus an unmodified layout character. The layout character is passed
 to Ghostty so Ctrl-letter shortcuts (including Pi's Ctrl+V clipboard-image attachment)
-remain modifiers, not plain text, under negotiated Kitty modes. Rune does not provide
-logical key-release callbacks or lock/modifier-side/composition metadata. Griz
-therefore reports press and repeat only; it does not synthesize Kitty release or
-modifier-only streams. Scripted logical keys may lack a physical code.
+remain modifiers, not plain text, under negotiated Kitty modes. Griz also infers that
+a lone Shift producing text was consumed, so shifted punctuation such as `:` remains
+text in Neovim instead of becoming a `Shift+;` shortcut. Rune does not provide logical
+key-release callbacks or lock/modifier-side/composition metadata. Griz therefore
+reports press and repeat only; it does not synthesize Kitty release or modifier-only
+streams. Scripted logical keys may lack a physical code.
 IME commits remain raw UTF-8 text because a composed result has no trustworthy native
 key event to attach; this avoids pretending to support associated native event streams
 that Rune did not provide.

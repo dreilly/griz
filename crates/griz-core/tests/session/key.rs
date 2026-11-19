@@ -75,6 +75,31 @@ fn ctrl_v_reaches_the_pty_under_pi_kitty_keyboard_flags() {
 }
 
 #[test]
+fn shifted_text_reaches_nvim_kitty_mode_as_text() {
+    let service = Service::start();
+    let mut stream = service.attach(80, 24);
+    let terminal_id = next_view(&mut stream).active_terminal.unwrap();
+    input(
+        &mut stream,
+        1,
+        terminal_id,
+        b"printf '\033[>3u'; stty raw -echo; printf 'nvim-colon-%s\r\n' ready; dd bs=1 count=1 2>/dev/null | od -An -tx1; printf '\033[<u'; stty sane; printf '\nnvim-colon-%s\n' done\r",
+    );
+    until(&mut stream, |event| contains(event, "nvim-colon-ready"));
+    let mut event = key(TerminalKey::Character);
+    event.text = ":".into();
+    event.physical = griz_protocol::PhysicalKey::new(49);
+    event.unshifted_codepoint = Some(';');
+    event.modifiers.shift = true;
+    command(&mut stream, 2, CoreCommand::Key { terminal_id, event });
+    let encoded = view(until(&mut stream, |event| {
+        contains(event, "nvim-colon-done")
+    }));
+    let rendered = text(&encoded.terminal.unwrap().screen);
+    assert!(rendered.contains("3a"), "screen={rendered:?}");
+}
+
+#[test]
 fn structured_key_rejects_unselected_and_exited_targets_without_rerouting() {
     let service = Service::start();
     let mut stream = service.attach(80, 24);

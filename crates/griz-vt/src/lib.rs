@@ -221,6 +221,7 @@ unsafe extern "C" {
         action: u8,
         key: u16,
         unshifted_codepoint: u32,
+        consumed_shift: u8,
         consumed_alt: u8,
         text: *const u8,
         text_len: usize,
@@ -494,6 +495,19 @@ impl Terminal {
         let key = event
             .physical
             .map_or_else(|| logical_key(event), |physical| physical.value());
+        let consumed_alt = cfg!(target_os = "macos")
+            && event.modifiers.alt
+            && !event.modifiers.ctrl
+            && !event.text.is_ascii();
+        // Rune does not expose the platform's consumed-modifier mask. A lone Shift on a
+        // character key is nevertheless unambiguous: it produced the supplied text and must
+        // not turn `:` into a Kitty `Shift+;` shortcut. Option-generated Unicode is likewise
+        // text on macOS, so Shift may be consumed alongside that already-consumed Option.
+        let consumed_shift = event.key == TerminalKey::Character
+            && event.modifiers.shift
+            && !event.modifiers.ctrl
+            && !event.modifiers.super_key
+            && (!event.modifiers.alt || consumed_alt);
         let mut data = std::ptr::null_mut();
         let mut len = 0;
         let mut kitty_flags = 0;
@@ -509,11 +523,8 @@ impl Terminal {
                 },
                 key,
                 unshifted_codepoint(event),
-                (cfg!(target_os = "macos")
-                    && event.modifiers.alt
-                    && !event.modifiers.ctrl
-                    && !event.text.is_ascii())
-                .into(),
+                consumed_shift.into(),
+                consumed_alt.into(),
                 event.text.as_ptr(),
                 event.text.len(),
                 event.modifiers.shift.into(),
@@ -1478,6 +1489,26 @@ mod tests {
         negotiated_enter.action = KeyAction::Repeat;
         let negotiated = terminal.key_input(&negotiated_enter).unwrap();
         assert!(String::from_utf8(negotiated).unwrap().contains(":2"));
+    }
+
+    #[test]
+    fn kitty_lone_shift_text_remains_text_for_nvim() {
+        for (text, physical, unshifted) in [(":", 49, ';'), ("A", 20, 'a')] {
+            let mut terminal = Terminal::new(80, 24).unwrap();
+            // Neovim requests disambiguation plus event types, but not report-all.
+            terminal.write(b"\x1b[>3u");
+            let mut event = key(
+                TerminalKey::Character,
+                text,
+                KeyModifiers {
+                    shift: true,
+                    ..KeyModifiers::default()
+                },
+            );
+            event.physical = PhysicalKey::new(physical);
+            event.unshifted_codepoint = Some(unshifted);
+            assert_eq!(terminal.key_input(&event).unwrap(), text.as_bytes());
+        }
     }
 
     #[test]

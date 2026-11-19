@@ -109,8 +109,11 @@ Griz keeps its historical Shift+Enter CSI-u sequence only while neither Kitty fl
 nor modifyOtherKeys is negotiated. Once either keyboard mode is active, Ghostty's
 result is authoritative, including Kitty repeat event types. Native Command/platform shortcuts remain outside terminal input,
 and macOS Option-generated Unicode remains text rather than gaining an artificial
-Meta escape prefix. For macOS Option-generated Unicode, Griz marks Alt consumed
-so adding the layout character does not turn composed text into a Kitty shortcut.
+Meta escape prefix. Griz marks a lone text-producing Shift consumed so shifted
+punctuation such as `:` remains text under Neovim's Kitty flags instead of becoming
+a `Shift+;` shortcut. For macOS Option-generated Unicode, Griz marks Alt (and an
+accompanying text-producing Shift) consumed so adding the layout character does not
+turn composed text into a Kitty shortcut.
 
 IME commits still use bounded raw UTF-8 `Input`. An IME commit has composed text but
 no trustworthy native key identity/action, so Griz does not fabricate a Kitty
@@ -122,8 +125,9 @@ is registered or advertised.
 not invent release events. Native dispatch usually supplies a physical code; scripted
 `Runtime::key` events and some platform keys do not, and remain logical-only. Rune's
 `Mods` also omits Caps Lock, Num Lock, modifier-side, consumed-modifier, and composing
-state, so those Ghostty event fields stay unset. Applications requesting Kitty release
-or modifier-only streams will not receive events Griz cannot observe.
+state. Griz can infer consumed lone Shift and macOS Option-generated text, but leaves
+other unavailable fields unset. Applications requesting Kitty release or modifier-only
+streams will not receive events Griz cannot observe.
 
 ### 5. Preserve logical lines when copying — addressed for the visible grid
 

@@ -801,6 +801,7 @@ int griz_vt_key_input(
     uint8_t action,
     uint16_t key,
     uint32_t unshifted_codepoint,
+    uint8_t consumed_shift,
     uint8_t consumed_alt,
     const uint8_t* text,
     size_t text_len,
@@ -855,16 +856,15 @@ int griz_vt_key_input(
     if (super_key) mods |= GHOSTTY_MODS_SUPER;
     result = ghostty_key_event_set_mods(vt->key_event, mods);
     if (result != GHOSTTY_SUCCESS) return result;
-    result = ghostty_key_event_set_consumed_mods(vt->key_event, 0);
+    // Consumed modifiers created the supplied text and must not make that text look like a
+    // shortcut. In particular, lone Shift+Semicolon is `:`, not a Kitty Shift+; sequence.
+    GhosttyMods consumed_mods = 0;
+    if (consumed_shift) consumed_mods |= GHOSTTY_MODS_SHIFT;
+    if (consumed_alt) consumed_mods |= GHOSTTY_MODS_ALT;
+    result = ghostty_key_event_set_consumed_mods(vt->key_event, consumed_mods);
     if (result != GHOSTTY_SUCCESS) return result;
     result = ghostty_key_event_set_composing(vt->key_event, false);
     if (result != GHOSTTY_SUCCESS) return result;
-    // Griz's macOS Option policy treats generated Unicode as text, not Meta.
-    // Keep that consumed modifier out of Kitty's shortcut identity as well.
-    if (consumed_alt) {
-        result = ghostty_key_event_set_consumed_mods(vt->key_event, GHOSTTY_MODS_ALT);
-        if (result != GHOSTTY_SUCCESS) return result;
-    }
     // Reset this on every event: the event handle is reused, including for named keys.
     result = ghostty_key_event_set_unshifted_codepoint(vt->key_event, unshifted_codepoint);
     if (result != GHOSTTY_SUCCESS) return result;
